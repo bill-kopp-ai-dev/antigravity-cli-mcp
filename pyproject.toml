@@ -1,0 +1,26 @@
+ [project]
+ name = "agy-mcp-server"
+version = "0.0.1"
+ description = "MCP server that exposes tools to run Antigravity CLI (agy) in a controlled workspace."
+ readme = "README.md"
+ requires-python = ">=3.11"
+ dependencies = [
+   "fastmcp>=3.0.0",
+   "pydantic>=2.7.0",
+   "pydantic-settings>=2.2.0",
+ ]
+ 
+ [project.optional-dependencies]
+ dev = [
+   "pytest>=8.0.0",
+ ]
+ ai = [
+   "pydantic-ai-slim[fastmcp]>=1.89.1",
+ ]
+ 
+ [build-system]
+ requires = ["hatchling>=1.24.2"]
+ build-backend = "hatchling.build"
+ 
+ [tool.hatch.build.targets.wheel]
+ packages = ["src/agy_mcp_server"]
