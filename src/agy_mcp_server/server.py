@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import signal
-import threading
 import os
+import signal
 import shutil
 import subprocess
+import sys
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,6 +13,10 @@ from typing import Any
 from uuid import uuid4
 
 from fastmcp import FastMCP
+
+_SRC_ROOT = Path(__file__).resolve().parents[1]
+if str(_SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(_SRC_ROOT))
 
 from agy_mcp_server.changes import (
     diff_snapshots,
@@ -24,19 +29,51 @@ from agy_mcp_server.hardening import ensure_valid_mcp_config_json
 from agy_mcp_server.models import (
     AgyCancelTaskRequest,
     AgyCancelTaskResponse,
+    AgyAppendPersistenceRequestIn,
+    AgyAppendPersistenceResponse,
+    AgyClearCacheRequestIn,
+    AgyClearCacheResponse,
     AgyHealthRequest,
     AgyHealthResponse,
+    AgyInitPersistenceRequestIn,
+    AgyInitPersistenceResponse,
     AgyListRunsRequest,
     AgyListRunsResponse,
+    AgyLoadPersistenceContextRequestIn,
+    AgyLoadPersistenceContextResponse,
     AgyPollTaskRequest,
     AgyPollTaskResponse,
+    AgyCancelTaskRequestIn,
+    AgyHealthRequestIn,
+    AgyListRunsRequestIn,
+    AgyPollTaskRequestIn,
+    AgyQuotaRequest,
+    AgyQuotaResponse,
+    AgyQuotaStatus,
+    AgyQuotaRequestIn,
+    AgyReadPersistenceRequestIn,
+    AgyReadPersistenceResponse,
     AgyRunTaskRequest,
     AgyRunTaskResponse,
     AgyStartTaskRequest,
     AgyStartTaskResponse,
+    AgyRunTaskRequestIn,
+    AgyStartTaskRequestIn,
+    AgyUpdatePersistenceRequestIn,
+    AgyUpdatePersistenceResponse,
     AgyRunResult,
     AgyRunSummary,
     WorkspaceChanges,
+)
+from agy_mcp_server.provider import tool_name, prompt_name, PROVIDER_PREFIX
+from agy_mcp_server.persistence import PersistenceStore
+from agy_mcp_server.quota import (
+    KNOWN_MODELS,
+    QuotaStatus as InternalQuotaStatus,
+    classify_agy_failure,
+    fetch_gemini_api_quota,
+    get_default_tracker,
+    probe_agy_quota,
 )
 from agy_mcp_server.rolling_buffer import RollingTextBuffer
 from agy_mcp_server.run_store import RunStore, StoredRun
@@ -53,6 +90,21 @@ _settings = Settings()
 _run_store = RunStore(max_runs=_settings.max_runs)
 _active_runs_lock = threading.Lock()
 _active_runs: dict[str, "ActiveRun"] = {}
+
+# Persistence store — file-based memory layer for AGENTS.md, PROJECTS.md, MEMORY.md.
+_persistence_store = PersistenceStore(
+    base_dir=_settings.persistence_base_dir,
+    max_file_bytes=_settings.persistence_max_file_bytes,
+    backup_on_write=_settings.persistence_backup_on_write,
+    seed_templates=_settings.persistence_seed_templates,
+)
+
+# Quota tracker is constructed from settings; a fresh instance is used per
+# process (no cross-process persistence by design).
+_quota_tracker = get_default_tracker()
+# Sync tracker settings with the loaded settings (in case env-driven).
+_quota_tracker.period_hours = _settings.quota_period_hours
+_quota_tracker.tier_limits = dict(_settings.quota_tier_limits)
 
 if _settings.fix_antigravity_mcp_config:
     ensure_valid_mcp_config_json(_settings.antigravity_mcp_config_path)
@@ -269,6 +321,13 @@ def _finalize_active_run(run: ActiveRun) -> None:
 
     stdout = run.stdout_buf.get()
     stderr = run.stderr_buf.get()
+
+    # Quota tracking: record the call and classify any failure.
+    _quota_tracker.record_call(_settings.quota_active_model)
+    if exit_code != 0 or timed_out:
+        _quota_tracker.record_failure(
+            classify_agy_failure(exit_code, stdout, stderr, timed_out)
+        )
 
     changes: WorkspaceChanges | None = None
     if run.request.capture_changes:
@@ -489,8 +548,8 @@ def prompt_security_and_workspace_rules() -> str:
     )
 
 
-@mcp.tool
-def agy_health(req: AgyHealthRequest) -> AgyHealthResponse:
+@mcp.tool(name=tool_name("health"))
+def agy_health(req: AgyHealthRequestIn) -> AgyHealthResponse:
     """
     Health check for the Antigravity CLI binary (`agy`).
 
@@ -518,8 +577,8 @@ def agy_health(req: AgyHealthRequest) -> AgyHealthResponse:
     return AgyHealthResponse(agy_path=agy, agy_version=version, ok=ok, notes=notes)
 
 
-@mcp.tool
-def agy_run_task(req: AgyRunTaskRequest) -> AgyRunTaskResponse:
+@mcp.tool(name=tool_name("run_task"))
+def agy_run_task(req: AgyRunTaskRequestIn) -> AgyRunTaskResponse:
     """
     Run a single Antigravity CLI task synchronously (blocking).
 
@@ -547,6 +606,37 @@ def agy_run_task(req: AgyRunTaskRequest) -> AgyRunTaskResponse:
     workspace = _resolve_workspace_path(req.workspace_path)
     _validate_exec_options(req)
 
+    # Optional: load persistent context and prepend to the prompt.
+    # Failures are non-fatal — the run continues without context.
+    prompt_text = req.prompt
+    if _settings.persistence_enabled and _persistence_store.is_initialized:
+        try:
+            ctx = _persistence_store.load_context()
+            header_parts = []
+            if ctx.agents_excerpt:
+                header_parts.append(
+                    "<persistent-agents-context>\n"
+                    f"{ctx.agents_excerpt}\n"
+                    "</persistent-agents-context>"
+                )
+            if ctx.projects_excerpt:
+                header_parts.append(
+                    "<persistent-projects-context>\n"
+                    f"{ctx.projects_excerpt}\n"
+                    "</persistent-projects-context>"
+                )
+            if ctx.memory_excerpt:
+                header_parts.append(
+                    "<persistent-memory-context>\n"
+                    f"{ctx.memory_excerpt}\n"
+                    "</persistent-memory-context>"
+                )
+            if header_parts:
+                prompt_text = "\n\n".join(header_parts) + "\n\n" + prompt_text
+        except Exception:
+            # Non-fatal: continue without persistent context.
+            pass
+
     before_snapshot = None
     if req.capture_changes and not is_git_repo(workspace) and req.change_scope == "workspace":
         before_snapshot = snapshot_tree(
@@ -556,8 +646,18 @@ def agy_run_task(req: AgyRunTaskRequest) -> AgyRunTaskResponse:
         )
 
     started_at = _now()
-    stdout, stderr, exit_code, timed_out = _run_agy(workspace, req)
+    stdout, stderr, exit_code, timed_out = _run_agy(
+        workspace,
+        req.model_copy(update={"prompt": prompt_text}),
+    )
     finished_at = _now()
+
+    # Quota tracking: record the call and classify any failure.
+    _quota_tracker.record_call(_settings.quota_active_model)
+    if exit_code != 0 or timed_out:
+        _quota_tracker.record_failure(
+            classify_agy_failure(exit_code, stdout, stderr, timed_out)
+        )
 
     stdout = stdout[: _settings.max_output_bytes]
     stderr = stderr[: _settings.max_output_bytes]
@@ -607,8 +707,8 @@ def agy_run_task(req: AgyRunTaskRequest) -> AgyRunTaskResponse:
     return AgyRunTaskResponse(result=result, changes=changes)
 
 
-@mcp.tool
-def agy_start_task(req: AgyStartTaskRequest) -> AgyStartTaskResponse:
+@mcp.tool(name=tool_name("start_task"))
+def agy_start_task(req: AgyStartTaskRequestIn) -> AgyStartTaskResponse:
     """
     Start an Antigravity CLI task asynchronously (non-blocking).
 
@@ -633,6 +733,36 @@ def agy_start_task(req: AgyStartTaskRequest) -> AgyStartTaskResponse:
     workspace = _resolve_workspace_path(req.workspace_path)
     _validate_exec_options(req)
 
+    # Optional: load persistent context and prepend to the prompt.
+    # Failures are non-fatal — the run continues without context.
+    prompt_text = req.prompt
+    if _settings.persistence_enabled and _persistence_store.is_initialized:
+        try:
+            ctx = _persistence_store.load_context()
+            header_parts = []
+            if ctx.agents_excerpt:
+                header_parts.append(
+                    "<persistent-agents-context>\n"
+                    f"{ctx.agents_excerpt}\n"
+                    "</persistent-agents-context>"
+                )
+            if ctx.projects_excerpt:
+                header_parts.append(
+                    "<persistent-projects-context>\n"
+                    f"{ctx.projects_excerpt}\n"
+                    "</persistent-projects-context>"
+                )
+            if ctx.memory_excerpt:
+                header_parts.append(
+                    "<persistent-memory-context>\n"
+                    f"{ctx.memory_excerpt}\n"
+                    "</persistent-memory-context>"
+                )
+            if header_parts:
+                prompt_text = "\n\n".join(header_parts) + "\n\n" + prompt_text
+        except Exception:
+            pass
+
     before_snapshot = None
     if req.capture_changes and not is_git_repo(workspace) and req.change_scope == "workspace":
         before_snapshot = snapshot_tree(
@@ -644,7 +774,8 @@ def agy_start_task(req: AgyStartTaskRequest) -> AgyStartTaskResponse:
     started_at = _now()
     run_id = f"run-{uuid4()}"
 
-    proc, _, input_text = _build_agy_popen(workspace, req)
+    req_for_agy = req.model_copy(update={"prompt": prompt_text})
+    proc, _, input_text = _build_agy_popen(workspace, req_for_agy)
     if proc.stdin is not None:
         try:
             proc.stdin.write(input_text)
@@ -676,8 +807,8 @@ def agy_start_task(req: AgyStartTaskRequest) -> AgyStartTaskResponse:
     return AgyStartTaskResponse(run_id=run_id, started_at=started_at)
 
 
-@mcp.tool
-def agy_poll_task(req: AgyPollTaskRequest) -> AgyPollTaskResponse:
+@mcp.tool(name=tool_name("poll_task"))
+def agy_poll_task(req: AgyPollTaskRequestIn) -> AgyPollTaskResponse:
     """
     Poll an asynchronous task started by agy_start_task.
 
@@ -721,8 +852,8 @@ def agy_poll_task(req: AgyPollTaskRequest) -> AgyPollTaskResponse:
     )
 
 
-@mcp.tool
-def agy_cancel_task(req: AgyCancelTaskRequest) -> AgyCancelTaskResponse:
+@mcp.tool(name=tool_name("cancel_task"))
+def agy_cancel_task(req: AgyCancelTaskRequestIn) -> AgyCancelTaskResponse:
     """
     Cancel an asynchronous task started by agy_start_task.
 
@@ -752,8 +883,8 @@ def agy_cancel_task(req: AgyCancelTaskRequest) -> AgyCancelTaskResponse:
     return AgyCancelTaskResponse(canceled=True, status="canceled")
 
 
-@mcp.tool
-def agy_list_runs(req: AgyListRunsRequest) -> AgyListRunsResponse:
+@mcp.tool(name=tool_name("list_runs"))
+def agy_list_runs(req: AgyListRunsRequestIn) -> AgyListRunsResponse:
     """
     List recent runs (both currently running and recently completed).
 
@@ -796,6 +927,452 @@ def agy_list_runs(req: AgyListRunsRequest) -> AgyListRunsResponse:
                 )
             )
     return AgyListRunsResponse(runs=runs)
+
+
+def _internal_to_response_status(s: InternalQuotaStatus) -> AgyQuotaStatus:
+    """Convert internal QuotaStatus dataclass to the Pydantic response model."""
+    return AgyQuotaStatus(
+        model=s.model,
+        tier=s.tier,
+        used=s.used,
+        limit=s.limit,
+        remaining=s.remaining,
+        reset_at=s.reset_at,
+        period_hours=s.period_hours,
+        healthy=s.healthy,
+        source=s.source,  # type: ignore[arg-type]
+        notes=list(s.notes),
+    )
+
+
+@mcp.tool(name=tool_name("quota"))
+def agy_quota(req: AgyQuotaRequestIn) -> AgyQuotaResponse:
+    """
+    Check Antigravity CLI model quota status.
+
+    The Antigravity CLI does NOT expose a direct quota inspection endpoint.
+    This tool implements a hybrid strategy combining four sources:
+
+    A) Local sliding-window counter (always-on, zero-cost):
+       - Tracks every agy_run_task / agy_start_task invocation per active model
+         in a 5-hour window (the documented quota refresh cadence).
+       - Reports `used`, `limit` (from settings), `remaining`, and `reset_at`.
+       - Works even when `agy` itself is broken.
+
+    B) Failure classifier (always-on):
+       - Inspects every failed agy run for quota-related keywords
+         (`resource_exhausted`, `quota exceeded`, `rate limit`, `429`).
+       - Notes last failure classification in each status entry.
+
+    C) Probe call (opt-in via `probe=True`):
+       - Runs a minimal `agy --prompt ok --max-turns 1` to verify the CLI is
+         responsive. WARNING: this call itself consumes quota.
+       - Useful when the local counter and stderr parser are inconclusive.
+
+    D) External API (opt-in via `use_api=True`):
+       - Stub: queries the Gemini API quota endpoint if implemented.
+       - Currently returns None with a logged warning unless `use_api=False`.
+
+    Args:
+      - model: if provided, returns only that model's status. Otherwise
+        returns statuses for all known models.
+      - tier: subscription tier for limit lookup (free/pro/ultra/enterprise).
+        Defaults to `unknown` which applies a permissive 999_999 limit.
+      - probe: opt-in flag for the C strategy above.
+      - use_api: opt-in flag for the D strategy above.
+
+    Returns:
+      - statuses: list of per-model QuotaStatus entries.
+      - overall_healthy: True if all statuses are healthy.
+      - active_model: the configured active model (from AGY_MCP_QUOTA_ACTIVE_MODEL).
+      - notes: top-level notes (e.g., warnings about probe consumption).
+    """
+    notes: list[str] = []
+    active_model = _settings.quota_active_model
+    tier = req.tier
+
+    statuses: list[AgyQuotaStatus] = []
+
+    if req.model:
+        # Single-model lookup.
+        internal = _quota_tracker.status(req.model, tier)
+        statuses.append(_internal_to_response_status(internal))
+    else:
+        # All known models + the active model (which has our actual usage).
+        models_to_check: list[str] = sorted(KNOWN_MODELS)
+        if active_model and active_model not in models_to_check:
+            models_to_check.append(active_model)
+        for m in models_to_check:
+            internal = _quota_tracker.status(m, tier)
+            statuses.append(_internal_to_response_status(internal))
+
+    # C) Probe (opt-in).
+    if req.probe:
+        notes.append(
+            "probe=True: a minimal `agy` task was executed and consumed quota."
+        )
+        healthy, message, kind = probe_agy_quota(
+            agy_path=_agy_path(),
+            workspace_path=None,
+            timeout_s=_settings.quota_probe_timeout_s,
+        )
+        # Annotate statuses with the probe result.
+        for s in statuses:
+            s.notes.append(f"probe: healthy={healthy} kind={kind} msg={message}")
+            if not healthy:
+                s.healthy = False
+
+    # D) External API (opt-in).
+    if req.use_api:
+        notes.append("use_api=True: external API call attempted (stub in v1).")
+        api_key = os.environ.get("AGY_MCP_QUOTA_API_KEY", "")
+        if api_key:
+            fetch_gemini_api_quota(
+                api_base_url=_settings.quota_api_base_url,
+                api_key=api_key,
+            )
+        else:
+            notes.append(
+                "AGY_MCP_QUOTA_API_KEY is not set; external API call skipped."
+            )
+
+    overall_healthy = all(s.healthy for s in statuses) if statuses else True
+
+    return AgyQuotaResponse(
+        statuses=statuses,
+        overall_healthy=overall_healthy,
+        active_model=active_model,
+        notes=notes,
+    )
+
+
+def _resolve_uv() -> Path:
+    uv_path = shutil.which("uv")
+    if not uv_path:
+        raise RuntimeError("UV_NOT_FOUND: uv is not in PATH")
+    return Path(uv_path)
+
+
+@mcp.tool(name=tool_name("clear_cache"))
+def agy_clear_cache(req: AgyClearCacheRequestIn) -> AgyClearCacheResponse:
+    """
+    Clear the uv package cache to resolve stale-package import errors.
+
+    When the MCP server fails to start with errors like:
+        ImportError: cannot import name 'Xxx' from 'agy_mcp_server'
+    and restarting / clearing uvx cache manually does not resolve it, this
+    tool runs `uv cache clean` to remove all cached package archives.
+
+    Behavior:
+    - By default (full=False), clears only the uv cache directory
+      (`~/.cache/uv`). This is the safest option and resolves most
+      stale-cache issues without affecting other projects.
+    - With full=True, clears the entire uv cache — useful when the server
+      is launched via `--from <path>` and the archive hash keeps being
+      reused across sessions.
+
+    Warning: clearing the cache causes subsequent `uvx` invocations to
+    re-download and re-install dependencies (slower first startup after clean).
+
+    Returns:
+      - cleared: True if the command succeeded.
+      - entries_removed: number of cache entries removed (estimate).
+      - cache_dir: the cache directory that was targeted.
+      - notes: warnings or additional details.
+    """
+    notes: list[str] = []
+    uv_exe = _resolve_uv()
+    cache_dir = os.path.expanduser("~/.cache/uv")
+
+    try:
+        cache_path = Path(cache_dir)
+        if not cache_path.exists():
+            notes.append("uv cache directory does not exist; nothing to clean.")
+            return AgyClearCacheResponse(
+                cleared=True,
+                entries_removed=0,
+                cache_dir=cache_dir,
+                notes=notes,
+            )
+
+        # Count entries before (rough estimate via subdirectory count).
+        before_entries = sum(1 for _ in cache_path.rglob("*") if _.is_dir())
+
+        args = [str(uv_exe), "cache", "clean"]
+        if req.full:
+            args.append("--dry-run")
+            notes.append("full=True: would clear entire cache (dry-run).")
+        else:
+            notes.append(
+                "full=False (default): clears uv cache entries for this package."
+            )
+
+        result = subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+        after_entries = sum(1 for _ in cache_path.rglob("*") if _.is_dir())
+        entries_removed = max(0, before_entries - after_entries)
+
+        if result.returncode == 0:
+            if entries_removed == 0:
+                notes.append("No cache entries were removed (already clean).")
+            else:
+                notes.append(
+                    f"Cache cleaned. Entries removed: {entries_removed}."
+                )
+        else:
+            notes.append(f"uv cache clean returned code {result.returncode}.")
+            if result.stderr:
+                notes.append(f"stderr: {result.stderr.strip()}")
+
+        return AgyClearCacheResponse(
+            cleared=result.returncode == 0,
+            entries_removed=entries_removed,
+            cache_dir=cache_dir,
+            notes=notes,
+        )
+
+    except subprocess.TimeoutExpired:
+        notes.append("Cache clean timed out after 60s.")
+        return AgyClearCacheResponse(
+            cleared=False,
+            entries_removed=0,
+            cache_dir=cache_dir,
+            notes=notes,
+        )
+    except Exception as e:
+        notes.append(f"Error during cache clean: {e}")
+        return AgyClearCacheResponse(
+            cleared=False,
+            entries_removed=0,
+            cache_dir=cache_dir,
+            notes=notes,
+        )
+
+
+# ------------------------------------------------------------------
+# Persistence tools
+# ------------------------------------------------------------------
+
+
+@mcp.tool(name=tool_name("init_persistence"))
+def agy_init_persistence(
+    req: AgyInitPersistenceRequestIn,
+) -> AgyInitPersistenceResponse:
+    """Initialize the persistence directory and seed the three markdown files.
+
+    Creates the directory at ``~/.open-cli-router/{provider}/`` and writes
+    ``AGENTS.md``, ``PROJECTS.md``, and ``MEMORY.md`` (unless they already
+    exist). Idempotent: re-running without ``force=true`` is a no-op.
+
+    Args:
+      - force: overwrite existing files.
+      - seed_templates: when True (default), writes the seed templates.
+        When False, creates empty files. When None, uses settings.
+
+    Returns:
+      - base_dir: absolute path to the persistence directory.
+      - created: paths created by this call.
+      - already_existed: paths that already existed (skipped).
+      - seed_version: version of the seed template used.
+    """
+    if not _settings.persistence_enabled:
+        raise ValueError(
+            "PERSISTENCE_DISABLED: persistence is disabled via settings"
+        )
+
+    result = _persistence_store.init(
+        force=req.force,
+        seed_templates=req.seed_templates,
+    )
+    return AgyInitPersistenceResponse(
+        base_dir=result.base_dir,
+        created=result.created,
+        already_existed=result.already_existed,
+        seed_version=result.seed_version,
+    )
+
+
+@mcp.tool(name=tool_name("read_persistence"))
+def agy_read_persistence(
+    req: AgyReadPersistenceRequestIn,
+) -> AgyReadPersistenceResponse:
+    """Read one of the three persistence files.
+
+    Args:
+      - file: ``agents``, ``projects``, or ``memory``.
+      - offset: byte offset to start reading (default 0).
+      - limit: max bytes to read (default: whole file up to max_file_bytes).
+
+    Returns:
+      - file: absolute path.
+      - content: file contents (UTF-8).
+      - size_bytes: total file size.
+      - truncated: True if the read was capped by ``limit`` or the file
+        was larger than ``persistence_max_file_bytes``.
+      - modified_at: last modification time (UTC).
+    """
+    if not _settings.persistence_enabled:
+        raise ValueError(
+            "PERSISTENCE_DISABLED: persistence is disabled via settings"
+        )
+
+    result = _persistence_store.read(
+        req.file, offset=req.offset, limit=req.limit
+    )
+    return AgyReadPersistenceResponse(
+        file=result.file,
+        content=result.content,
+        size_bytes=result.size_bytes,
+        truncated=result.truncated,
+        modified_at=result.modified_at,
+    )
+
+
+@mcp.tool(name=tool_name("append_persistence"))
+def agy_append_persistence(
+    req: AgyAppendPersistenceRequestIn,
+) -> AgyAppendPersistenceResponse:
+    """Append content to one of the persistence files.
+
+    Typical use: append a concise summary to ``memory`` after each session.
+
+    Args:
+      - file: ``agents``, ``projects``, or ``memory``.
+      - content: markdown text to append.
+      - section_header: optional ``## <header>`` to insert before the
+        content if the heading is not already present.
+
+    Returns:
+      - file: absolute path.
+      - appended_bytes: bytes added by this call.
+      - new_size_bytes: total file size after append.
+      - timestamp: server time of the write (UTC).
+    """
+    if not _settings.persistence_enabled:
+        raise ValueError(
+            "PERSISTENCE_DISABLED: persistence is disabled via settings"
+        )
+
+    result = _persistence_store.append(
+        req.file, req.content, section_header=req.section_header
+    )
+    return AgyAppendPersistenceResponse(
+        file=result.file,
+        appended_bytes=result.appended_bytes,
+        new_size_bytes=result.new_size_bytes,
+        timestamp=result.timestamp,
+    )
+
+
+@mcp.tool(name=tool_name("update_persistence"))
+def agy_update_persistence(
+    req: AgyUpdatePersistenceRequestIn,
+) -> AgyUpdatePersistenceResponse:
+    """Replace or append to a section in one of the persistence files.
+
+    Args:
+      - file: ``agents``, ``projects``, or ``memory``.
+      - section_anchor: heading text without the ``## `` prefix.
+      - new_content: replacement content (full section including heading)
+        when ``mode="replace"``.
+      - mode: ``replace`` (default) replaces the section up to the next
+        ``## `` heading. ``append`` ignores the anchor and appends
+        ``new_content`` to the end of the file.
+
+    Returns:
+      - file: absolute path.
+      - section_anchor: the anchor that was requested.
+      - matched: True if the anchor was found (replace mode). Always True
+        for append mode.
+      - new_size_bytes: total file size after the update.
+    """
+    if not _settings.persistence_enabled:
+        raise ValueError(
+            "PERSISTENCE_DISABLED: persistence is disabled via settings"
+        )
+
+    result = _persistence_store.update(
+        req.file,
+        req.section_anchor,
+        req.new_content,
+        mode=req.mode,
+    )
+    return AgyUpdatePersistenceResponse(
+        file=result.file,
+        section_anchor=result.section_anchor,
+        matched=result.matched,
+        new_size_bytes=result.new_size_bytes,
+    )
+
+
+@mcp.tool(name=tool_name("load_persistence_context"))
+def agy_load_persistence_context(
+    req: AgyLoadPersistenceContextRequestIn,
+) -> AgyLoadPersistenceContextResponse:
+    """Load the persistence files as context for the current session.
+
+    Returns excerpts (head + tail) of each requested file. Used by the
+    orchestrator to inject persistent memory into a new session.
+
+    Args:
+      - include: which files to load (default: all three).
+      - max_chars_per_file: truncation threshold (default 20k chars).
+
+    Returns:
+      - agents_excerpt / projects_excerpt / memory_excerpt: the excerpts.
+      - truncated_flags: True for each file that was truncated.
+      - total_chars: sum of excerpt lengths.
+      - base_dir: the persistence directory path.
+      - initialized: True if ``agy_init_persistence`` has been run.
+    """
+    if not _settings.persistence_enabled:
+        raise ValueError(
+            "PERSISTENCE_DISABLED: persistence is disabled via settings"
+        )
+
+    result = _persistence_store.load_context(
+        include=req.include,
+        max_chars_per_file=req.max_chars_per_file,
+    )
+    return AgyLoadPersistenceContextResponse(
+        agents_excerpt=result.agents_excerpt,
+        projects_excerpt=result.projects_excerpt,
+        memory_excerpt=result.memory_excerpt,
+        truncated_flags=result.truncated_flags,
+        total_chars=result.total_chars,
+        base_dir=result.base_dir,
+        initialized=result.initialized,
+    )
+
+
+@mcp.prompt(name=prompt_name("persistence_protocol"))
+def prompt_persistence_protocol() -> str:
+    """Instruct the orchestrator on how to maintain the persistence layer."""
+    return (
+        "You have access to a persistent memory layer at "
+        "~/.open-cli-router/{provider}/ with three editable files:\n"
+        "- AGENTS.md (your editable system prompt)\n"
+        "- PROJECTS.md (project summaries)\n"
+        "- MEMORY.md (permanent memory)\n"
+        "\n"
+        "Lifecycle:\n"
+        "1. On the first run, call `{provider}_init_persistence` to "
+        "create the directory and seed files.\n"
+        "2. At the start of each session, call "
+        "`{provider}_load_persistence_context` to load the latest state.\n"
+        "3. After each meaningful session, append a concise summary to "
+        "MEMORY.md using `{provider}_append_persistence`.\n"
+        "4. When the user explicitly changes AGENTS.md or PROJECTS.md, "
+        "use `{provider}_update_persistence` to persist.\n"
+        "\n"
+        "Do not store secrets, credentials, or full file dumps in "
+        "MEMORY.md — keep entries small and high-signal.\n"
+    ).replace("{provider}", PROVIDER_PREFIX)
 
 
 def main() -> None:

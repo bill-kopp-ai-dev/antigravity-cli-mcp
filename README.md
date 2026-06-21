@@ -45,12 +45,34 @@ A local STDIO MCP server that exposes tools and reusable prompts for running the
 - `agy_poll_task`: polls an asynchronous task
 - `agy_cancel_task`: cancels a running task
 - `agy_list_runs`: lists recent runs
+- `agy_quota`: hybrid quota inspection (local counter, failure classifier,
+  opt-in probe, opt-in external API)
+- `agy_clear_cache`: clears the `uv` cache to recover from stale-package errors
+- `agy_init_persistence`: creates `~/.open-cli-router/agy/` with editable
+  `AGENTS.md`, `PROJECTS.md`, `MEMORY.md`
+- `agy_read_persistence`: reads one of the three persistence files
+- `agy_append_persistence`: appends content (typical use: post-session memory)
+- `agy_update_persistence`: replaces a section by heading anchor
+- `agy_load_persistence_context`: loads truncated excerpts as session context
 
 **Prompts**
 - `prompt_sync_orchestration`: guidance for `agy_run_task`
 - `prompt_async_orchestration`: guidance for `agy_start_task` → `agy_poll_task` → `agy_cancel_task`
 - `prompt_model_selection_guidance`: explains how model selection works and its limitations
 - `prompt_security_and_workspace_rules`: summarizes workspace and safety rules for orchestrators
+- `agy_persistence_protocol`: instructs the orchestrator on how to maintain
+  the persistent memory layer
+
+## Persistent Memory
+
+This MCP server ships with a file-based persistence layer at
+`~/.open-cli-router/agy/`. The orchestrator (Trae IDE) gets editable
+markdown files for system prompt (`AGENTS.md`), project summaries
+(`PROJECTS.md`), and permanent memory (`MEMORY.md`). When enabled, the
+server automatically prepends excerpts of these files to the prompt sent
+to `agy` so context survives across sessions. See
+[PLAN_PERSISTENCE.md](PLAN_PERSISTENCE.md) and
+[CONTRATO_TOOLS.md](CONTRATO_TOOLS.md) for details.
 
 ## Quickstart
 
