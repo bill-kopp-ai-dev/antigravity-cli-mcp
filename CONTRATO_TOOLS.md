@@ -30,7 +30,7 @@ Output: `AgyRunTaskResponse`
 
 ### agy_start_task
 
-Input: `AgyStartTaskRequest` (same as `AgyRunTaskRequest`, plus `stream_stdout: bool`)
+Input: `AgyStartTaskRequest` (same as `AgyRunTaskRequest`)
 
 Output: `AgyStartTaskResponse`
 - `run_id: str`

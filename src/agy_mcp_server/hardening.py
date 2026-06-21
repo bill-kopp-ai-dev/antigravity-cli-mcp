@@ -26,8 +26,7 @@ def ensure_valid_mcp_config_json(path: Path) -> bool:
         json.loads(content)
         return False
     except json.JSONDecodeError:
-        _atomic_write_json(path, {"mcpServers": {}})
-        return True
+        return False
 
 
 def _atomic_write_json(path: Path, data: dict) -> None:

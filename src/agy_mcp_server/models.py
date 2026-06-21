@@ -34,7 +34,7 @@ class AgyRunTaskRequest(BaseModel):
 
 
 class AgyStartTaskRequest(AgyRunTaskRequest):
-    stream_stdout: bool = False
+    pass
 
 
 class AgyPollTaskRequest(BaseModel):

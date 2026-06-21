@@ -15,7 +15,17 @@ class FileState:
 
 
 def is_git_repo(workspace: Path) -> bool:
-    return (workspace / ".git").exists()
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            cwd=str(workspace),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    except Exception:
+        return False
+    return proc.returncode == 0 and proc.stdout.strip() == "true"
 
 
 def git_diff(workspace: Path) -> str | None:
@@ -36,7 +46,7 @@ def git_changed_files(workspace: Path) -> list[str]:
         return []
     try:
         out = subprocess.check_output(
-            ["git", "status", "--porcelain"],
+            ["git", "status", "--porcelain", "--untracked-files=all"],
             cwd=str(workspace),
             text=True,
         )

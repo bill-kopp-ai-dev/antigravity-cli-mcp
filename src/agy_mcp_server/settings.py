@@ -8,7 +8,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="AGY_MCP_", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_prefix="AGY_MCP_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
     allowed_roots: list[Path] = Field(default_factory=list)
     mode: Literal["safe", "permissive"] = "safe"
@@ -24,7 +29,7 @@ class Settings(BaseSettings):
     allow_extra_args: set[str] = Field(default_factory=set)
     force_sandbox_in_safe_mode: bool = True
 
-    fix_antigravity_mcp_config: bool = True
+    fix_antigravity_mcp_config: bool = False
     antigravity_mcp_config_path: Path = Field(
         default_factory=lambda: Path("~/.gemini/config/mcp_config.json").expanduser()
     )

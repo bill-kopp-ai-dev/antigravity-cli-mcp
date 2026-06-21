@@ -24,25 +24,59 @@ What `uv sync` does:
 
 ## 2) Register the MCP Server in Trae
 
-Add a local MCP server in Trae with these settings:
+Trae supports `stdio`, `SSE`, and `Streamable HTTP` MCP servers. The recommended setup is a `stdio` server using `uvx` (the runner that ships with `uv`). Trae itself bundles `uv` and exposes the `uvx` executable on PATH, so no extra Python install is required.
+
+Open `Settings → MCP` in Trae and add a manual server, or create `.trae/mcp.json` at the project root.
+
+### 2.1 Manual setup (recommended)
 
 ```json
 {
   "mcpServers": {
     "agy-mcp-server": {
-      "command": "/path/to/antigravity-cli-mcp/.venv/bin/python",
+      "command": "uvx",
       "args": [
-        "-m",
-        "fastmcp.cli",
+        "--from",
+        "/path/to/antigravity-cli-mcp",
+        "--with",
+        "fastmcp>=3.0.0",
+        "fastmcp",
         "run",
-        "src/agy_mcp_server/server.py",
-        "--transport",
-        "stdio"
+        "src/agy_mcp_server/server.py"
       ],
       "cwd": "/path/to/antigravity-cli-mcp",
       "env": {
         "AGY_MCP_MODE": "safe",
         "AGY_MCP_ALLOWED_ROOTS": "[\"/path/to/your/projects\"]",
+        "AGY_MCP_FORCE_SANDBOX_IN_SAFE_MODE": "true",
+        "START_MCP_TIMEOUT_MS": "30000",
+        "RUN_MCP_TIMEOUT_MS": "600000"
+      }
+    }
+  }
+}
+```
+
+### 2.2 Project-level setup (.trae/mcp.json)
+
+Trae can load MCP servers from `.trae/mcp.json` in the workspace root. Enable "Project-level MCP" in `Settings → MCP`, then commit the file:
+
+```json
+{
+  "mcpServers": {
+    "agy-mcp-server": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "${workspaceFolder}/antigravity-cli-mcp",
+        "fastmcp",
+        "run",
+        "antigravity-cli-mcp/src/agy_mcp_server/server.py"
+      ],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "AGY_MCP_MODE": "safe",
+        "AGY_MCP_ALLOWED_ROOTS": "[${workspaceFolder}]",
         "AGY_MCP_FORCE_SANDBOX_IN_SAFE_MODE": "true"
       }
     }
@@ -51,9 +85,12 @@ Add a local MCP server in Trae with these settings:
 ```
 
 Important:
-- use `-m fastmcp.cli` (not `python -m fastmcp`)
-- set `cwd` to the project directory
-- `AGY_MCP_ALLOWED_ROOTS` must be a JSON array string
+- the official Trae docs recommend `uvx` (or `npx`) over `python -m fastmcp.cli`; `uvx` is the runner Trae looks for.
+- `command` cannot contain spaces; use `args` for the rest of the invocation.
+- `${workspaceFolder}` is expanded by Trae at startup and resolves to the current project root.
+- `START_MCP_TIMEOUT_MS` / `RUN_MCP_TIMEOUT_MS` are read by Trae from the `env` block to cap server startup and tool calls.
+- `AGY_MCP_ALLOWED_ROOTS` must be a JSON array string, not a comma-separated list.
+- `.trae/mcp.json` is loaded from the project root, so make sure the path you commit is portable.
 
 ## 3) Troubleshooting
 
