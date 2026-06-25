@@ -74,6 +74,55 @@ to `agy` so context survives across sessions. See
 [PLAN_PERSISTENCE.md](PLAN_PERSISTENCE.md) and
 [CONTRATO_TOOLS.md](CONTRATO_TOOLS.md) for details.
 
+### Two-level configuration
+
+Persistence is controlled by **both** server-level environment variables and runtime MCP tool calls:
+
+**Server level** (set in the MCP client `env` block — see [MCP Client Configuration](#mcp-client-configuration)):
+
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `AGY_MCP_PERSISTENCE_ENABLED` | Master switch for the persistence feature | `true` |
+| `AGY_MCP_PERSISTENCE_BASE_DIR` | Base directory; the namespace `agy` is appended automatically | `~/.open-cli-router` |
+| `AGY_MCP_PERSISTENCE_MAX_FILE_BYTES` | Maximum size per file before writes are rejected | `524288` (512 KiB) |
+| `AGY_MCP_PERSISTENCE_BACKUP_ON_WRITE` | Create `.bak` before each modification | `false` |
+| `AGY_MCP_PERSISTENCE_SEED_TEMPLATES` | Seed default markdown content when initializing | `true` |
+
+**Runtime level** (called by the orchestrator via MCP tools):
+
+1. **Initialize once** — call `agy_init_persistence` to create `~/.open-cli-router/agy/` and seed the three files.
+2. **Load context** — call `agy_load_persistence_context` at the start of each session to inject excerpts into the next prompt.
+3. **Append session notes** — after meaningful work, call `agy_append_persistence` on `MEMORY.md`.
+4. **Update structured sections** — when the user changes `AGENTS.md` or `PROJECTS.md`, call `agy_update_persistence` to persist.
+
+Without step 1, persistence is **enabled but uninitialized** — the server will not inject any context until the directory exists.
+
+### How to initialize the persistence directory
+
+The persistence directory is created lazily — it does **not** exist by default. There are two equivalent ways to create it:
+
+**Option A — via MCP (recommended, normal flow):**
+
+Once both the MCP client configuration and the server are running, ask the orchestrator agent to call:
+
+```text
+Please call agy_init_persistence to create the persistence directory.
+```
+
+The tool seeds `AGENTS.md`, `PROJECTS.md`, `MEMORY.md`, and a `.initialized` marker under `~/.open-cli-router/agy/`.
+
+**Option B — directly via Python (one-shot, useful for verification or first-time setup):**
+
+From the project root (`antigravity-cli-mcp/`):
+
+```bash
+uv run python -c "from agy_mcp_server.persistence import PersistenceStore; from pathlib import Path; PersistenceStore(base_dir=Path.home()/'.open-cli-router', max_file_bytes=524288, backup_on_write=False, seed_templates=True).init()"
+```
+
+This call is idempotent — running it twice does not destroy existing data unless you pass `force=True`.
+
+The seed templates are written in **English** so they can be edited by any language-aware agent later.
+
 ## Quickstart
 
 Prerequisites:
@@ -87,7 +136,66 @@ uv sync
 uv run python -m fastmcp.cli run src/agy_mcp_server/server.py --transport stdio
 ```
 
-Run tests:
+## MCP Client Configuration
+
+The server is launched by an MCP client (Trae, Cursor, Windsurf, etc.) over STDIO. The recommended setup uses `uvx` to install the package from a local source path on demand — no global Python install required.
+
+### Trae / Cursor / Windsurf (`uvx` from local source)
+
+Add to your MCP client configuration (`~/.trae/mcp.json`, `.cursor/mcp.json`, `.windsurf/mcp.json`, or the IDE's MCP settings panel):
+
+```json
+{
+  "mcpServers": {
+    "agy-mcp-server": {
+      "command": "uvx",
+      "args": [
+        "--refresh",
+        "--from",
+        "/path/to/antigravity-cli-mcp",
+        "fastmcp",
+        "run",
+        "src/agy_mcp_server/server.py"
+      ],
+      "cwd": "/path/to/antigravity-cli-mcp",
+      "env": {
+        "AGY_MCP_MODE": "safe",
+        "AGY_MCP_ALLOWED_ROOTS": "[\"/path/to/your/projects\"]",
+        "AGY_MCP_FORCE_SANDBOX_IN_SAFE_MODE": "true",
+        "START_MCP_TIMEOUT_MS": "30000",
+        "RUN_MCP_TIMEOUT_MS": "600000"
+      }
+    }
+  }
+}
+```
+
+> **Tip:** `--refresh` forces `uvx` to re-resolve the local source on every start. Drop it once you stop iterating on the server.
+>
+> **Tip:** `START_MCP_TIMEOUT_MS` and `RUN_MCP_TIMEOUT_MS` are **client-side** timeouts consumed by the Trae IDE (not by this server).
+
+### Relevant environment variables
+
+The most relevant variables for the `env` block are listed below. See [Configuration](#configuration) for the full reference.
+
+| Variable | Purpose |
+|----------|---------|
+| `AGY_MCP_MODE` | `safe` (default) or `permissive` |
+| `AGY_MCP_ALLOWED_ROOTS` | JSON list of workspace roots the server is allowed to access |
+| `AGY_MCP_FORCE_SANDBOX_IN_SAFE_MODE` | `true` enforces sandboxing under safe mode |
+| `AGY_MCP_DEFAULT_TIMEOUT_S` | Default per-task timeout in seconds (must be ≤ 3600) |
+| `AGY_MCP_PERSISTENCE_ENABLED` | Enables the persistent memory layer (`true` by default) |
+| `AGY_MCP_PERSISTENCE_BASE_DIR` | Base directory for the persistence layer (`~/.open-cli-router`) |
+
+> **Persistence is a two-level configuration.** The env vars above only **enable** the feature and pick the base directory. To actually create the files and start injecting context, the orchestrator must call `agy_init_persistence` once at startup. See [Persistent Memory](#persistent-memory) for the full lifecycle.
+
+### Step-by-step Trae setup (Portuguese)
+
+For a guided walkthrough in Portuguese, see [USO_TRAE.md](USO_TRAE.md).
+
+## Running Tests
+
+To install dev dependencies and execute the test suite:
 
 ```bash
 uv sync --extra dev
@@ -111,6 +219,11 @@ This server uses environment variables via Pydantic Settings (prefix `AGY_MCP_`)
 | `AGY_MCP_FORCE_SANDBOX_IN_SAFE_MODE` | enforce sandbox in safe mode | `true` |
 | `AGY_MCP_ALLOW_ENV_KEYS` | JSON list of allowed env keys (permissive mode) | `[]` |
 | `AGY_MCP_ALLOW_EXTRA_ARGS` | JSON list of allowlisted extra args (permissive mode) | `[]` |
+| `AGY_MCP_PERSISTENCE_ENABLED` | Enables the persistent markdown memory layer. | `true` |
+| `AGY_MCP_PERSISTENCE_BASE_DIR` | Base directory for the persistence layer (namespace `agy` is appended automatically). | `~/.open-cli-router` |
+| `AGY_MCP_PERSISTENCE_MAX_FILE_BYTES` | Maximum file size for persistence files before rejecting writes. | `524288` (512 KiB) |
+| `AGY_MCP_PERSISTENCE_BACKUP_ON_WRITE` | Create a `.bak` backup copy of files before modification. | `false` |
+| `AGY_MCP_PERSISTENCE_SEED_TEMPLATES` | Seed default markdown files if missing on init. | `true` |
 
 Local configuration:
 
@@ -197,6 +310,9 @@ Set `AGY_MCP_ALLOWED_ROOTS` to include your workspace root:
 ```bash
 export AGY_MCP_ALLOWED_ROOTS='["/path/to/your/projects"]'
 ```
+
+### `~/.open-cli-router/agy/` does not exist
+The persistence directory is created lazily. The server will not create it on its own — you must initialize it once via `agy_init_persistence` (or the Python one-liner under [Persistent Memory → How to initialize](#how-to-initialize-the-persistence-directory)). Without this, the server is **enabled but uninitialized** and no context is injected into prompts.
 
 ### `Unable to handle .../.venv`
 

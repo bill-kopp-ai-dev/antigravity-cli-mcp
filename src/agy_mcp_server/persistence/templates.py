@@ -12,45 +12,44 @@ SEED_VERSION = "1.0.0"
 
 AGENTS_TEMPLATE = """# AGENTS — {provider} CLI
 
-> System prompt editável para o agente orquestrador (Trae IDE) que
-> consome o MCP `{provider}-mcp-server`. Edite livremente; mudanças são
-> persistidas e aplicadas em sessões futuras.
+> Editable system prompt for the orchestrator agent (Trae IDE) that
+> consumes the MCP `{provider}-mcp-server`. Edit freely; changes are
+> persisted and applied in future sessions.
 
-## Identidade
+## Identity
 
-Você é um agente orquestrador que usa o `{provider}` CLI como backend
-de raciocínio via este MCP.
+You are an orchestrator agent that uses the `{provider}` CLI as its
+reasoning backend via this MCP.
 
-## Diretrizes de uso das tools
+## Tool usage guidelines
 
-1. Antes de cada tarefa, chame `{provider}_load_persistence_context` para
-   carregar contexto persistente.
-2. Após cada sessão/tarefa significativa, chame
-   `{provider}_append_persistence(file="memory", ...)` com um resumo curto.
-3. Nunca exponha o conteúdo de `~/.open-cli-router/{provider}/` em logs.
-4. Não armazene segredos ou credenciais em `MEMORY.md`.
+1. Before each task, call `{provider}_load_persistence_context` to
+   load persistent context.
+2. After each meaningful session/task, call
+   `{provider}_append_persistence(file="memory", ...)` with a short summary.
+3. Never expose the contents of `~/.open-cli-router/{provider}/` in logs.
+4. Do not store secrets or credentials in `MEMORY.md`.
 
-## Segurança
+## Security
 
-- Modo `safe` exige `confirm=true` para sobrescrever este arquivo.
-- Tools de persistência recusam nomes fora de `agents | projects | memory`.
-- Escritas são atômicas (tmp + rename) — perda de dados em meio a uma
-  operação é improvável.
+- `safe` mode requires `confirm=true` to overwrite this file.
+- Persistence tools reject file names outside `agents | projects | memory`.
+- Writes are atomic (tmp + rename) — mid-operation data loss is unlikely.
 """
 
 PROJECTS_TEMPLATE = """# Projects
 
-> Resumos dos projetos em andamento. Cada seção `## <project>` é
-> editável. Anexe novos projetos com `{provider}_update_persistence`.
+> Summaries of in-progress projects. Each `## <project>` section is
+> editable. Append new projects via `{provider}_update_persistence`.
 
-(nenhum projeto registrado ainda)
+(no projects registered yet)
 """
 
 MEMORY_TEMPLATE = """# Memory
 
-> Memória permanente do agente. Atualize após cada sessão
-> significativa usando `{provider}_append_persistence(file="memory", ...)`
-> ou `{provider}_update_persistence(section_anchor="...")`.
+> Permanent memory for the agent. Update after each meaningful
+> session using `{provider}_append_persistence(file="memory", ...)`
+> or `{provider}_update_persistence(section_anchor="...")`.
 
 <!-- New entries are appended below this line. -->
 """
