@@ -125,3 +125,52 @@ def test_all_tools_tolerate_empty_args():
                 f"{name}: 'req' annotation {ann!r} does not include None — "
                 f"type checker would reject `req=None`."
             )
+
+
+def test_allowed_root_slash_grants_full_access():
+    """Regression: when allowed_roots contains '/', ANY workspace_path must be allowed.
+
+    The previous check `str(p).startswith(str(root) + '/')` produced '//' for root='/',
+    which never matched any real path. This test guards against that regression.
+    """
+    from pathlib import Path
+    from agy_mcp_server.settings import Settings
+
+    s = Settings(allowed_roots=[Path("/")])
+    allowed = s.resolved_allowed_roots()
+    test_paths = [
+        "/home/bill/Codes/zero_trust_env",
+        "/etc/passwd",
+        "/tmp/test",
+        "/home/bill/.ssh/id_rsa",
+        "/",
+    ]
+    for p_str in test_paths:
+        p = Path(p_str).expanduser().resolve()
+        ok = any(
+            str(root) == "/" or p == root or str(p).startswith(str(root) + "/")
+            for root in allowed
+        )
+        assert ok, f"{p_str} should be allowed when allowed_roots=['/'], got rejected"
+
+
+def test_allowed_root_specific_dir_rejects_others():
+    """Specific allowed_roots still rejects paths outside them (sanity check)."""
+    from pathlib import Path
+    from agy_mcp_server.settings import Settings
+
+    s = Settings(allowed_roots=[Path("/home/bill/Codes/CLI-router-project")])
+    allowed = s.resolved_allowed_roots()
+    cases = [
+        ("/home/bill/Codes/zero_trust_env", False),
+        ("/home/bill/Codes/CLI-router-project", True),
+        ("/home/bill/Codes/CLI-router-project/subdir", True),
+        ("/etc/passwd", False),
+    ]
+    for p_str, expected in cases:
+        p = Path(p_str).expanduser().resolve()
+        ok = any(
+            str(root) == "/" or p == root or str(p).startswith(str(root) + "/")
+            for root in allowed
+        )
+        assert ok == expected, f"{p_str}: expected {expected}, got {ok}"
