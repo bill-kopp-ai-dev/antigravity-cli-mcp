@@ -78,3 +78,34 @@ def test_forking_provider_prefix_renames_all_tools(monkeypatch):
     assert tool_name("health") == "claude_health"
     assert tool_name("run_task") == "claude_run_task"
     assert tool_name("clear_cache") == "claude_clear_cache"
+
+
+def test_all_tools_tolerate_empty_args():
+    """Every tool must accept args={} (returning success or ValidationError, never TypeError)."""
+    from pydantic import ValidationError
+    from agy_mcp_server.server import mcp
+    
+    tools_dict = {}
+    if hasattr(mcp, "_local_provider") and hasattr(mcp._local_provider, "_components"):
+        tools_dict = {
+            v.name: v
+            for k, v in mcp._local_provider._components.items()
+            if k.startswith("tool:")
+        }
+    else:
+        tool_manager = getattr(mcp, "_tool_manager", None) or getattr(mcp, "_tools", None)
+        tools_dict = tool_manager._tools
+    
+    for name, tool in tools_dict.items():
+        try:
+            # call fn with no arguments
+            tool.fn()
+        except ValidationError:
+            # Expected for tools with required fields
+            pass
+        except TypeError as e:
+            pytest.fail(f"Tool {name} raised TypeError on empty args: {e}")
+        except Exception:
+            # Other exceptions (like workspace dir not existing or persistence disabled)
+            # are expected because we call the function directly with no setup.
+            pass

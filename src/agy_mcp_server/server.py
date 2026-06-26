@@ -29,28 +29,33 @@ from agy_mcp_server.hardening import ensure_valid_mcp_config_json
 from agy_mcp_server.models import (
     AgyCancelTaskRequest,
     AgyCancelTaskResponse,
+    AgyCancelTaskRequestIn,
+    AgyAppendPersistenceRequest,
     AgyAppendPersistenceRequestIn,
     AgyAppendPersistenceResponse,
+    AgyClearCacheRequest,
     AgyClearCacheRequestIn,
     AgyClearCacheResponse,
     AgyHealthRequest,
+    AgyHealthRequestIn,
     AgyHealthResponse,
+    AgyInitPersistenceRequest,
     AgyInitPersistenceRequestIn,
     AgyInitPersistenceResponse,
     AgyListRunsRequest,
+    AgyListRunsRequestIn,
     AgyListRunsResponse,
+    AgyLoadPersistenceContextRequest,
     AgyLoadPersistenceContextRequestIn,
     AgyLoadPersistenceContextResponse,
     AgyPollTaskRequest,
-    AgyPollTaskResponse,
-    AgyCancelTaskRequestIn,
-    AgyHealthRequestIn,
-    AgyListRunsRequestIn,
     AgyPollTaskRequestIn,
+    AgyPollTaskResponse,
     AgyQuotaRequest,
     AgyQuotaResponse,
     AgyQuotaStatus,
     AgyQuotaRequestIn,
+    AgyReadPersistenceRequest,
     AgyReadPersistenceRequestIn,
     AgyReadPersistenceResponse,
     AgyRunTaskRequest,
@@ -59,11 +64,16 @@ from agy_mcp_server.models import (
     AgyStartTaskResponse,
     AgyRunTaskRequestIn,
     AgyStartTaskRequestIn,
+    AgyUpdatePersistenceRequest,
     AgyUpdatePersistenceRequestIn,
     AgyUpdatePersistenceResponse,
     AgyRunResult,
     AgyRunSummary,
     WorkspaceChanges,
+    AgySelfTestRequest,
+    AgySelfTestRequestIn,
+    AgySelfTestResponse,
+    AgyToolSchemaReport,
 )
 from agy_mcp_server.provider import tool_name, prompt_name, PROVIDER_PREFIX
 from agy_mcp_server.persistence import PersistenceStore
@@ -549,7 +559,7 @@ def prompt_security_and_workspace_rules() -> str:
 
 
 @mcp.tool(name=tool_name("health"))
-def agy_health(req: AgyHealthRequestIn) -> AgyHealthResponse:
+def agy_health(req: AgyHealthRequestIn | None = None) -> AgyHealthResponse:
     """
     Health check for the Antigravity CLI binary (`agy`).
 
@@ -564,7 +574,16 @@ def agy_health(req: AgyHealthRequestIn) -> AgyHealthResponse:
     - agy_version: raw `agy --version` output (trimmed)
     - ok: whether the health check passed (and version matched, if requested)
     - notes: details such as version mismatch information
+
+    Args shape:
+        The MCP client MUST pass arguments wrapped in a `req` object:
+            `{"req": {"field1": value1, "field2": value2, ...}}`
+        For backwards-compatibility, the server also accepts `args={}` for
+        tools whose request model has all-optional fields; required-field
+        errors surface as Pydantic ValidationError.
     """
+    if req is None:
+        req = AgyHealthRequest()
     agy = _agy_path()
     version = subprocess.check_output([agy, "--version"], text=True).strip()
 
@@ -578,7 +597,7 @@ def agy_health(req: AgyHealthRequestIn) -> AgyHealthResponse:
 
 
 @mcp.tool(name=tool_name("run_task"))
-def agy_run_task(req: AgyRunTaskRequestIn) -> AgyRunTaskResponse:
+def agy_run_task(req: AgyRunTaskRequestIn | None = None) -> AgyRunTaskResponse:
     """
     Run a single Antigravity CLI task synchronously (blocking).
 
@@ -602,7 +621,16 @@ def agy_run_task(req: AgyRunTaskRequestIn) -> AgyRunTaskResponse:
     - This MCP server does not control the reasoning model used by `agy`. `agy` uses the model
       configured in the CLI itself (via the interactive /model command) and persists it across
       sessions.
+
+    Args shape:
+        The MCP client MUST pass arguments wrapped in a `req` object:
+            `{"req": {"field1": value1, "field2": value2, ...}}`
+        For backwards-compatibility, the server also accepts `args={}` for
+        tools whose request model has all-optional fields; required-field
+        errors surface as Pydantic ValidationError.
     """
+    if req is None:
+        req = AgyRunTaskRequest()
     workspace = _resolve_workspace_path(req.workspace_path)
     _validate_exec_options(req)
 
@@ -708,7 +736,7 @@ def agy_run_task(req: AgyRunTaskRequestIn) -> AgyRunTaskResponse:
 
 
 @mcp.tool(name=tool_name("start_task"))
-def agy_start_task(req: AgyStartTaskRequestIn) -> AgyStartTaskResponse:
+def agy_start_task(req: AgyStartTaskRequestIn | None = None) -> AgyStartTaskResponse:
     """
     Start an Antigravity CLI task asynchronously (non-blocking).
 
@@ -729,7 +757,16 @@ def agy_start_task(req: AgyStartTaskRequestIn) -> AgyStartTaskResponse:
     Model selection note:
     - This MCP server does not control the reasoning model used by `agy`. Configure it inside
       the CLI via /model.
+
+    Args shape:
+        The MCP client MUST pass arguments wrapped in a `req` object:
+            `{"req": {"field1": value1, "field2": value2, ...}}`
+        For backwards-compatibility, the server also accepts `args={}` for
+        tools whose request model has all-optional fields; required-field
+        errors surface as Pydantic ValidationError.
     """
+    if req is None:
+        req = AgyStartTaskRequest()
     workspace = _resolve_workspace_path(req.workspace_path)
     _validate_exec_options(req)
 
@@ -808,7 +845,7 @@ def agy_start_task(req: AgyStartTaskRequestIn) -> AgyStartTaskResponse:
 
 
 @mcp.tool(name=tool_name("poll_task"))
-def agy_poll_task(req: AgyPollTaskRequestIn) -> AgyPollTaskResponse:
+def agy_poll_task(req: AgyPollTaskRequestIn | None = None) -> AgyPollTaskResponse:
     """
     Poll an asynchronous task started by agy_start_task.
 
@@ -825,7 +862,16 @@ def agy_poll_task(req: AgyPollTaskRequestIn) -> AgyPollTaskResponse:
 
     Errors:
     - Raises RUN_NOT_FOUND if run_id is unknown to both the active run set and the run store.
+
+    Args shape:
+        The MCP client MUST pass arguments wrapped in a `req` object:
+            `{"req": {"field1": value1, "field2": value2, ...}}`
+        For backwards-compatibility, the server also accepts `args={}` for
+        tools whose request model has all-optional fields; required-field
+        errors surface as Pydantic ValidationError.
     """
+    if req is None:
+        req = AgyPollTaskRequest()
     with _active_runs_lock:
         active = _active_runs.get(req.run_id)
 
@@ -853,7 +899,7 @@ def agy_poll_task(req: AgyPollTaskRequestIn) -> AgyPollTaskResponse:
 
 
 @mcp.tool(name=tool_name("cancel_task"))
-def agy_cancel_task(req: AgyCancelTaskRequestIn) -> AgyCancelTaskResponse:
+def agy_cancel_task(req: AgyCancelTaskRequestIn | None = None) -> AgyCancelTaskResponse:
     """
     Cancel an asynchronous task started by agy_start_task.
 
@@ -868,7 +914,16 @@ def agy_cancel_task(req: AgyCancelTaskRequestIn) -> AgyCancelTaskResponse:
     Note:
     - Cancellation is best-effort. The process may still take a short time to exit; use
       agy_poll_task to observe the final status and retrieve output.
+
+    Args shape:
+        The MCP client MUST pass arguments wrapped in a `req` object:
+            `{"req": {"field1": value1, "field2": value2, ...}}`
+        For backwards-compatibility, the server also accepts `args={}` for
+        tools whose request model has all-optional fields; required-field
+        errors surface as Pydantic ValidationError.
     """
+    if req is None:
+        req = AgyCancelTaskRequest()
     with _active_runs_lock:
         active = _active_runs.get(req.run_id)
 
@@ -884,7 +939,7 @@ def agy_cancel_task(req: AgyCancelTaskRequestIn) -> AgyCancelTaskResponse:
 
 
 @mcp.tool(name=tool_name("list_runs"))
-def agy_list_runs(req: AgyListRunsRequestIn) -> AgyListRunsResponse:
+def agy_list_runs(req: AgyListRunsRequestIn | None = None) -> AgyListRunsResponse:
     """
     List recent runs (both currently running and recently completed).
 
@@ -897,7 +952,16 @@ def agy_list_runs(req: AgyListRunsRequestIn) -> AgyListRunsResponse:
 
     Output:
     - runs: summaries containing run_id, workspace_path, status, and started_at
+
+    Args shape:
+        The MCP client MUST pass arguments wrapped in a `req` object:
+            `{"req": {"field1": value1, "field2": value2, ...}}`
+        For backwards-compatibility, the server also accepts `args={}` for
+        tools whose request model has all-optional fields; required-field
+        errors surface as Pydantic ValidationError.
     """
+    if req is None:
+        req = AgyListRunsRequest()
     runs: list[AgyRunSummary] = []
 
     with _active_runs_lock:
@@ -946,7 +1010,7 @@ def _internal_to_response_status(s: InternalQuotaStatus) -> AgyQuotaStatus:
 
 
 @mcp.tool(name=tool_name("quota"))
-def agy_quota(req: AgyQuotaRequestIn) -> AgyQuotaResponse:
+def agy_quota(req: AgyQuotaRequestIn | None = None) -> AgyQuotaResponse:
     """
     Check Antigravity CLI model quota status.
 
@@ -986,7 +1050,16 @@ def agy_quota(req: AgyQuotaRequestIn) -> AgyQuotaResponse:
       - overall_healthy: True if all statuses are healthy.
       - active_model: the configured active model (from AGY_MCP_QUOTA_ACTIVE_MODEL).
       - notes: top-level notes (e.g., warnings about probe consumption).
+
+    Args shape:
+        The MCP client MUST pass arguments wrapped in a `req` object:
+            `{"req": {"field1": value1, "field2": value2, ...}}`
+        For backwards-compatibility, the server also accepts `args={}` for
+        tools whose request model has all-optional fields; required-field
+        errors surface as Pydantic ValidationError.
     """
+    if req is None:
+        req = AgyQuotaRequest()
     notes: list[str] = []
     active_model = _settings.quota_active_model
     tier = req.tier
@@ -1054,7 +1127,7 @@ def _resolve_uv() -> Path:
 
 
 @mcp.tool(name=tool_name("clear_cache"))
-def agy_clear_cache(req: AgyClearCacheRequestIn) -> AgyClearCacheResponse:
+def agy_clear_cache(req: AgyClearCacheRequestIn | None = None) -> AgyClearCacheResponse:
     """
     Clear the uv package cache to resolve stale-package import errors.
 
@@ -1079,7 +1152,16 @@ def agy_clear_cache(req: AgyClearCacheRequestIn) -> AgyClearCacheResponse:
       - entries_removed: number of cache entries removed (estimate).
       - cache_dir: the cache directory that was targeted.
       - notes: warnings or additional details.
+
+    Args shape:
+        The MCP client MUST pass arguments wrapped in a `req` object:
+            `{"req": {"field1": value1, "field2": value2, ...}}`
+        For backwards-compatibility, the server also accepts `args={}` for
+        tools whose request model has all-optional fields; required-field
+        errors surface as Pydantic ValidationError.
     """
+    if req is None:
+        req = AgyClearCacheRequest()
     notes: list[str] = []
     uv_exe = _resolve_uv()
     cache_dir = os.path.expanduser("~/.cache/uv")
@@ -1161,7 +1243,7 @@ def agy_clear_cache(req: AgyClearCacheRequestIn) -> AgyClearCacheResponse:
 
 @mcp.tool(name=tool_name("init_persistence"))
 def agy_init_persistence(
-    req: AgyInitPersistenceRequestIn,
+    req: AgyInitPersistenceRequestIn | None = None,
 ) -> AgyInitPersistenceResponse:
     """Initialize the persistence directory and seed the three markdown files.
 
@@ -1179,7 +1261,16 @@ def agy_init_persistence(
       - created: paths created by this call.
       - already_existed: paths that already existed (skipped).
       - seed_version: version of the seed template used.
+
+    Args shape:
+        The MCP client MUST pass arguments wrapped in a `req` object:
+            `{"req": {"field1": value1, "field2": value2, ...}}`
+        For backwards-compatibility, the server also accepts `args={}` for
+        tools whose request model has all-optional fields; required-field
+        errors surface as Pydantic ValidationError.
     """
+    if req is None:
+        req = AgyInitPersistenceRequest()
     if not _settings.persistence_enabled:
         raise ValueError(
             "PERSISTENCE_DISABLED: persistence is disabled via settings"
@@ -1199,7 +1290,7 @@ def agy_init_persistence(
 
 @mcp.tool(name=tool_name("read_persistence"))
 def agy_read_persistence(
-    req: AgyReadPersistenceRequestIn,
+    req: AgyReadPersistenceRequestIn | None = None,
 ) -> AgyReadPersistenceResponse:
     """Read one of the three persistence files.
 
@@ -1215,7 +1306,16 @@ def agy_read_persistence(
       - truncated: True if the read was capped by ``limit`` or the file
         was larger than ``persistence_max_file_bytes``.
       - modified_at: last modification time (UTC).
+
+    Args shape:
+        The MCP client MUST pass arguments wrapped in a `req` object:
+            `{"req": {"field1": value1, "field2": value2, ...}}`
+        For backwards-compatibility, the server also accepts `args={}` for
+        tools whose request model has all-optional fields; required-field
+        errors surface as Pydantic ValidationError.
     """
+    if req is None:
+        req = AgyReadPersistenceRequest()
     if not _settings.persistence_enabled:
         raise ValueError(
             "PERSISTENCE_DISABLED: persistence is disabled via settings"
@@ -1235,7 +1335,7 @@ def agy_read_persistence(
 
 @mcp.tool(name=tool_name("append_persistence"))
 def agy_append_persistence(
-    req: AgyAppendPersistenceRequestIn,
+    req: AgyAppendPersistenceRequestIn | None = None,
 ) -> AgyAppendPersistenceResponse:
     """Append content to one of the persistence files.
 
@@ -1252,7 +1352,16 @@ def agy_append_persistence(
       - appended_bytes: bytes added by this call.
       - new_size_bytes: total file size after append.
       - timestamp: server time of the write (UTC).
+
+    Args shape:
+        The MCP client MUST pass arguments wrapped in a `req` object:
+            `{"req": {"field1": value1, "field2": value2, ...}}`
+        For backwards-compatibility, the server also accepts `args={}` for
+        tools whose request model has all-optional fields; required-field
+        errors surface as Pydantic ValidationError.
     """
+    if req is None:
+        req = AgyAppendPersistenceRequest()
     if not _settings.persistence_enabled:
         raise ValueError(
             "PERSISTENCE_DISABLED: persistence is disabled via settings"
@@ -1271,7 +1380,7 @@ def agy_append_persistence(
 
 @mcp.tool(name=tool_name("update_persistence"))
 def agy_update_persistence(
-    req: AgyUpdatePersistenceRequestIn,
+    req: AgyUpdatePersistenceRequestIn | None = None,
 ) -> AgyUpdatePersistenceResponse:
     """Replace or append to a section in one of the persistence files.
 
@@ -1290,7 +1399,16 @@ def agy_update_persistence(
       - matched: True if the anchor was found (replace mode). Always True
         for append mode.
       - new_size_bytes: total file size after the update.
+
+    Args shape:
+        The MCP client MUST pass arguments wrapped in a `req` object:
+            `{"req": {"field1": value1, "field2": value2, ...}}`
+        For backwards-compatibility, the server also accepts `args={}` for
+        tools whose request model has all-optional fields; required-field
+        errors surface as Pydantic ValidationError.
     """
+    if req is None:
+        req = AgyUpdatePersistenceRequest()
     if not _settings.persistence_enabled:
         raise ValueError(
             "PERSISTENCE_DISABLED: persistence is disabled via settings"
@@ -1312,7 +1430,7 @@ def agy_update_persistence(
 
 @mcp.tool(name=tool_name("load_persistence_context"))
 def agy_load_persistence_context(
-    req: AgyLoadPersistenceContextRequestIn,
+    req: AgyLoadPersistenceContextRequestIn | None = None,
 ) -> AgyLoadPersistenceContextResponse:
     """Load the persistence files as context for the current session.
 
@@ -1329,7 +1447,16 @@ def agy_load_persistence_context(
       - total_chars: sum of excerpt lengths.
       - base_dir: the persistence directory path.
       - initialized: True if ``agy_init_persistence`` has been run.
+
+    Args shape:
+        The MCP client MUST pass arguments wrapped in a `req` object:
+            `{"req": {"field1": value1, "field2": value2, ...}}`
+        For backwards-compatibility, the server also accepts `args={}` for
+        tools whose request model has all-optional fields; required-field
+        errors surface as Pydantic ValidationError.
     """
+    if req is None:
+        req = AgyLoadPersistenceContextRequest()
     if not _settings.persistence_enabled:
         raise ValueError(
             "PERSISTENCE_DISABLED: persistence is disabled via settings"
@@ -1373,6 +1500,90 @@ def prompt_persistence_protocol() -> str:
         "Do not store secrets, credentials, or full file dumps in "
         "MEMORY.md — keep entries small and high-signal.\n"
     ).replace("{provider}", PROVIDER_PREFIX)
+
+
+@mcp.tool(name=tool_name("self_test"))
+def agy_self_test(req: AgySelfTestRequestIn | None = None) -> AgySelfTestResponse:
+    """Inspect every registered tool's input schema and report robustness.
+
+    This is a metadata-only check — no tools are actually invoked, so it
+    is safe to run in production and has no side effects.
+
+    Args shape:
+        The MCP client MUST pass arguments wrapped in a `req` object:
+            `{"req": {"include": ["agy_health"], "only_show_tolerant": true}}`
+        For backwards-compatibility, the server also accepts `args={}` for
+        tools whose request model has all-optional fields; required-field
+        errors surface as Pydantic ValidationError.
+    """
+    if req is None:
+        req = AgySelfTestRequest()
+    
+    # Access FastMCP's internal tools
+    tools_dict = {}
+    if hasattr(mcp, "_local_provider") and hasattr(mcp._local_provider, "_components"):
+        tools_dict = {
+            v.name: v
+            for k, v in mcp._local_provider._components.items()
+            if k.startswith("tool:")
+        }
+    else:
+        tool_manager = getattr(mcp, "_tool_manager", None) or getattr(mcp, "_tools", None)
+        if tool_manager is None:
+            raise RuntimeError("Cannot access FastMCP tool manager; FastMCP API may have changed")
+        
+        if hasattr(tool_manager, "_tools"):
+            tools_dict = tool_manager._tools
+        elif hasattr(tool_manager, "list_tools"):
+            raise RuntimeError("FastMCP tool manager requires async enumeration; please update self_test implementation")
+        else:
+            raise RuntimeError(f"Unsupported tool manager type: {type(tool_manager)}")
+    
+    reports: list[AgyToolSchemaReport] = []
+    for name, tool in tools_dict.items():
+        # `tool` may be a Tool object or a callable; extract parameters schema
+        if hasattr(tool, "parameters"):
+            schema = tool.parameters  # JSON schema dict
+        elif hasattr(tool, "input_schema"):
+            schema = tool.input_schema
+        else:
+            # Fallback: introspect signature
+            import inspect
+            sig = inspect.signature(tool)
+            params = [p for p in sig.parameters.values() if p.name != "self"]
+            schema = {
+                "required": [p.name for p in params if p.default is inspect.Parameter.empty],
+                "properties": {p.name: {"type": "object"} for p in params},
+            }
+        
+        required = schema.get("required", []) if isinstance(schema, dict) else []
+        properties = list(schema.get("properties", {}).keys()) if isinstance(schema, dict) else []
+        
+        if req.include is not None:
+            if not any(name.startswith(p) for p in req.include):
+                continue
+        if req.only_show_tolerant and required:
+            continue
+        
+        reports.append(AgyToolSchemaReport(
+            name=name,
+            top_level_required=required,
+            top_level_properties=properties,
+            accepts_empty_args=len(required) == 0,
+            requires_req_wrapper="req" in required,
+        ))
+    
+    tolerant = sum(1 for r in reports if r.accepts_empty_args)
+    requires_req = sum(1 for r in reports if r.requires_req_wrapper)
+    
+    return AgySelfTestResponse(
+        total_tools=len(reports),
+        tolerant_count=tolerant,
+        requires_req_count=requires_req,
+        tools=reports,
+        server_info={"name": "agy-mcp-server", "version": "3.4.2"},
+        summary=f"{len(reports)} tools inspected: {tolerant} tolerant to args={{}}, {requires_req} still require `req` wrapper",
+    )
 
 
 def main() -> None:

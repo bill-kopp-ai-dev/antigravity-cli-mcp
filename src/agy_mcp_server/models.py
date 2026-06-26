@@ -293,3 +293,31 @@ AgyUpdatePersistenceRequestIn = Annotated[
 AgyLoadPersistenceContextRequestIn = Annotated[
     AgyLoadPersistenceContextRequest, BeforeValidator(_coerce_empty_str_to_dict)
 ]
+
+
+class AgySelfTestRequest(BaseModel):
+    """Request to run the agy self-test (metadata-only)."""
+    include: list[str] | None = None  # None = all tools; else filter by name prefix
+    only_show_tolerant: bool = False  # If True, only return tools that accept args={}
+
+AgySelfTestRequestIn = Annotated[AgySelfTestRequest, BeforeValidator(_coerce_empty_str_to_dict)]
+
+
+class AgyToolSchemaReport(BaseModel):
+    """Per-tool schema report from agy_self_test."""
+    name: str
+    top_level_required: list[str] = Field(default_factory=list)
+    top_level_properties: list[str] = Field(default_factory=list)
+    accepts_empty_args: bool
+    requires_req_wrapper: bool  # True if "req" is in top_level_required (legacy schema)
+
+
+class AgySelfTestResponse(BaseModel):
+    """Response from agy_self_test."""
+    total_tools: int
+    tolerant_count: int  # Number of tools that accept args={} (i.e. required is empty)
+    requires_req_count: int  # Number of tools that still require `req` wrapper
+    tools: list[AgyToolSchemaReport] = Field(default_factory=list)
+    server_info: dict[str, Any] = Field(default_factory=dict)
+    summary: str
+
