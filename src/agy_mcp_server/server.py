@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import signal
 import shutil
@@ -1500,6 +1501,131 @@ def prompt_persistence_protocol() -> str:
         "Do not store secrets, credentials, or full file dumps in "
         "MEMORY.md — keep entries small and high-signal.\n"
     ).replace("{provider}", PROVIDER_PREFIX)
+
+
+@mcp.prompt(name=prompt_name("quickstart"))
+def prompt_quickstart() -> str:
+    """Cheatsheet for using this MCP server. Read this first if confused.
+
+    Returns the canonical contract: args shape, required CLI binary,
+    tool catalog, and common gotchas. Static, but kept in sync with
+    `agy_self_test` results.
+    """
+    return (
+        f"# {PROVIDER_PREFIX}-mcp-server — Quickstart\n"
+        "\n"
+        "## Args shape (CRITICAL — most bugs come from this)\n"
+        "    run_mcp(args={\"req\": {...}})       # ✓ correct — dict\n"
+        "    run_mcp(args=[{\"req\": {...}}])     # ✗ wrong — list wraps as {\"item\": ...}\n"
+        "    run_mcp(args={})                    # OK after refactor: req is now optional\n"
+        "\n"
+        "## CLI binary required\n"
+        "    agy must be installed and on PATH (Antigravity CLI, Gemini models).\n"
+        "    Verify with agy_health(req={}).\n"
+        "\n"
+        "## Tool catalog (14 tools)\n"
+        "    agy_health                  — ping server + check CLI version\n"
+        "    agy_self_test               — schema robustness probe (run first if unsure)\n"
+        "    agy_run_task                — sync execution (blocking, with timeout)\n"
+        "    agy_start_task / agy_poll_task / agy_cancel_task — async lifecycle\n"
+        "    agy_list_runs               — list active/completed runs\n"
+        "    agy_quota                   — local quota counter (no probe by default)\n"
+        "    agy_clear_cache             — uv cache clean (use full=true for --dry-run)\n"
+        "    Persistence (5):\n"
+        "        agy_init_persistence, agy_read_persistence,\n"
+        "        agy_append_persistence, agy_update_persistence,\n"
+        "        agy_load_persistence_context\n"
+        "\n"
+        "## workspace_path for run_task\n"
+        "    Must be inside AGY_MCP_ALLOWED_ROOTS (JSON-array env var).\n"
+        "    Default = Path.cwd() of the server process = the server's project dir.\n"
+        "\n"
+        "## Common gotchas → call troubleshoot prompt with the error string\n"
+        "    Use prompt `agy_troubleshoot` with the exact error message.\n"
+        "\n"
+        "## Restart requirement\n"
+        "    After server-side changes that add new tools/prompts, restart the\n"
+        "    MCP server in the Trae panel so the registry re-discovers them.\n"
+    )
+
+
+@mcp.prompt(name=prompt_name("contract"))
+def prompt_contract() -> str:
+    """Full machine-readable JSON contract of every registered tool.
+
+    Builds the catalog from mcp._local_provider._components so it stays
+    in sync with the actual registered tool schemas. Read this before
+    writing integrations.
+    """
+    tools_dict: dict[str, Any] = {}
+    if hasattr(mcp, "_local_provider") and hasattr(mcp._local_provider, "_components"):
+        tools_dict = {
+            v.name: v.parameters if hasattr(v, "parameters") else {}
+            for k, v in mcp._local_provider._components.items()
+            if k.startswith("tool:")
+        }
+    elif hasattr(mcp, "_tool_manager"):
+        tools_dict = getattr(mcp._tool_manager, "_tools", {})
+
+    parts = [f"# {PROVIDER_PREFIX}-mcp-server — Full tool contract\n"]
+    for name, schema in sorted(tools_dict.items()):
+        parts.append(f"## {name}\n")
+        parts.append("```json\n")
+        try:
+            parts.append(json.dumps(schema, indent=2, default=str))
+        except Exception:  # noqa: BLE001
+            parts.append(str(schema))
+        parts.append("\n```\n")
+    return "\n".join(parts)
+
+
+@mcp.prompt(name=prompt_name("troubleshoot"))
+def prompt_troubleshoot(error: str = "") -> str:
+    """Diagnose a specific error string and return the fix recipe.
+
+    Pass the exact error message you received (e.g. \"req: Missing required
+    argument\" or \"workspace_path is outside allowed roots\") and this
+    prompt returns the canonical fix.
+    """
+    err_lc = (error or "").lower()
+    if not err_lc:
+        return (
+            "Pass the exact error message you received as the `error` arg.\n"
+            "Example: prompt `agy_troubleshoot` with error=\"req: Missing required argument\"."
+        )
+    if "missing required argument" in err_lc and "req" in err_lc:
+        return (
+            "BUG: args shape wrong. You're sending args as a list or empty dict.\n"
+            "FIX: pass args={\"req\": {...}} (a dict with the `req` key)."
+        )
+    if "not allowed" in err_lc or "outside allowed roots" in err_lc:
+        return (
+            "BUG: workspace_path is not in the server's allowed roots.\n"
+            "FIX: set AGY_MCP_ALLOWED_ROOTS=[\"/your/path\"] (JSON array) in the server's\n"
+            "env, or pass a workspace_path inside Path.cwd() of the server process."
+        )
+    if "tool is not found" in err_lc or "mcp tool is not found" in err_lc:
+        return (
+            "BUG: Trae MCP registry stale.\n"
+            "FIX: user must restart the MCP server in the Trae panel (not retry the call)."
+        )
+    if "not logged in" in err_lc or "/login" in err_lc:
+        return (
+            "BUG: agy CLI auth expired or not initialized in this session.\n"
+            "FIX: user must run `agy` interactively once or `agy login` to re-auth."
+        )
+    if "tolerant_count" in err_lc or "requires_req_count" in err_lc:
+        return (
+            "Schema regression detected. Some tools no longer accept args={}.\n"
+            "FIX: run agy_self_test to enumerate, then check the affected tool's signature."
+        )
+    return (
+        f"No specific recipe for: {error!r}.\n"
+        "General debug steps:\n"
+        "1. Run agy_self_test(req={}) to check server health.\n"
+        "2. Read the `agy_quickstart` prompt.\n"
+        "3. Check the server's stderr for the actual exception."
+    )
 
 
 @mcp.tool(name=tool_name("self_test"))
