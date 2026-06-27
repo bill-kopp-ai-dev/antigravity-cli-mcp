@@ -252,6 +252,10 @@ class AgyUpdatePersistenceRequest(BaseModel):
     section_anchor: str
     new_content: str
     mode: Literal["replace", "append"] = "replace"
+    # Paridade com claude-code-cli-mcp: em safe mode, atualizar AGENTS.md
+    # (system-prompt editável) exige confirm=true explícito para evitar
+    # sobrescrita acidental.
+    confirm: bool = False
 
 
 class AgyUpdatePersistenceResponse(BaseModel):

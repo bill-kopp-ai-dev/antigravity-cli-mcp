@@ -32,6 +32,17 @@ from __future__ import annotations
 # Single source of truth. Change this when forking the server for another CLI.
 PROVIDER_PREFIX: str = "agy"
 
+# Persistence namespace (on-disk directory name).
+#
+# For agy this coincides with PROVIDER_PREFIX, but it is maintained as a
+# separate constant for parity with claude-code-cli-mcp, where
+# PROVIDER_PREFIX="claude" but PERSISTENCE_NAMESPACE="claude-code".
+#
+# Keeping these decoupled lets forks use a short MCP wire prefix
+# (e.g. "codex") while exposing a human-readable directory name
+# (e.g. "codex-cli") under ``~/.open-cli-router/``.
+PERSISTENCE_NAMESPACE: str = "agy"
+
 # Convention: tool names are always ``{PROVIDER_PREFIX}_{suffix}``.
 # Keep suffix in snake_case.
 _NAME_SEPARATOR: str = "_"

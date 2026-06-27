@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -48,6 +49,28 @@ _FILE_TO_TEMPLATE = {
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _normalize_section_header(header: str) -> str:
+    """Strip leading '#' chars and surrounding whitespace from a section header.
+
+    The store always writes ``## <header>`` — the caller-supplied ``header``
+    must NOT include the ``##`` prefix. This helper removes accidental
+    prefixes (e.g. ``"## foo"`` → ``"foo"``) so callers cannot produce
+    double-heading bugs like ``## ## foo``.
+
+    Handles all of:
+      - ``"## foo"``        → ``"foo"``
+      - ``"  ##  bar  "``   → ``"bar"``   (mixed leading whitespace + hash)
+      - ``"### baz"``       → ``"baz"``   (multiple hashes)
+    """
+    return re.sub(r"^[#\s]+", "", header).strip()
+
+
+def _header_line_exists(current: str, header_text: str) -> bool:
+    """Check whether a ``## <header_text>`` line already exists, case-insensitive."""
+    target = f"## {header_text}".lower()
+    return any(line.rstrip().lower() == target for line in current.splitlines())
 
 
 @dataclass(slots=True)
@@ -103,13 +126,24 @@ class PersistenceStore:
         base_dir: Path,
         max_file_bytes: int = 524_288,
         backup_on_write: bool = False,
+        backup_keep: int = 10,
         seed_templates: bool = True,
+        head_ratio: float = 0.2,
     ) -> None:
         self._base_dir_raw = Path(base_dir)
         self._base_dir = get_persistence_dir(self._base_dir_raw)
         self._max_file_bytes = max_file_bytes
         self._backup_on_write = backup_on_write
+        self._backup_keep = backup_keep
         self._seed_templates = seed_templates
+        # head_ratio: fraction of ``max_chars_per_file`` preserved at the
+        # head when truncating; the rest (1 - head_ratio) is reserved for
+        # the tail. Default 0.2 (20% head, 80% tail) favors recency.
+        if not 0.0 <= head_ratio <= 1.0:
+            raise ValueError(
+                f"INVALID_HEAD_RATIO: must be between 0 and 1, got {head_ratio!r}"
+            )
+        self._head_ratio = head_ratio
 
     # ------------------------------------------------------------------
     # Initialization
@@ -194,12 +228,20 @@ class PersistenceStore:
 
         with path.open("rb") as f:
             f.seek(offset)
-            data = f.read(limit) if limit is not None else f.read()
+            if limit is not None:
+                data = f.read(limit)
+            else:
+                data = f.read()
 
-        truncated = limit is not None and len(data) == limit
-        # Also flag if the file was capped at max_file_bytes but we read all of it.
-        if not truncated and stat.st_size > offset + len(data):
-            truncated = True
+        # truncated = True se (a) limit foi atingido mas há mais dados após o
+        # offset, OU (b) limit não foi dado mas o arquivo bateu no teto
+        # max_file_bytes (caso raro, pois o check no início já teria falhado
+        # nesse caso — mantido para defesa em profundidade).
+        remaining_after_offset = max(0, stat.st_size - offset)
+        if limit is not None:
+            truncated = remaining_after_offset > len(data)
+        else:
+            truncated = stat.st_size > self._max_file_bytes
 
         return ReadResult(
             file=str(path),
@@ -227,9 +269,16 @@ class PersistenceStore:
             # Build the chunk to append.
             chunk = content if content.endswith("\n") else content + "\n"
             if section_header:
-                header_line = f"## {section_header}\n"
-                if header_line not in current:
-                    chunk = f"\n{header_line}\n{chunk}"
+                header_text = _normalize_section_header(section_header)
+                if not header_text:
+                    raise ValueError(
+                        "INVALID_SECTION_HEADER: header cannot be empty "
+                        "after normalization (was: "
+                        f"{section_header!r})"
+                    )
+                # Dedup case-insensitive: prevents `## ## foo` bug.
+                if not _header_line_exists(current, header_text):
+                    chunk = f"\n## {header_text}\n{chunk}"
 
             new_content = current + chunk
             new_size = len(new_content.encode("utf-8"))
@@ -328,10 +377,17 @@ class PersistenceStore:
 
             truncated = len(text) > max_chars_per_file
             if truncated:
-                # Keep head + tail.
-                head = text[: max_chars_per_file // 2]
-                tail = text[-max_chars_per_file // 2 :]
-                text = f"{head}\n\n... [truncated] ...\n\n{tail}"
+                # Truncation assimétrica: preserva mais tail que head (recência
+                # é mais importante que conteúdo antigo). head_ratio default 0.2
+                # = 20% head, 80% tail.
+                head_size = int(max_chars_per_file * self._head_ratio)
+                tail_size = max_chars_per_file - head_size
+                head = text[:head_size]
+                tail = text[-tail_size:]
+                omitted = len(text) - max_chars_per_file
+                text = (
+                    f"{head}\n\n... [truncated {omitted} chars] ...\n\n{tail}"
+                )
 
             result.truncated_flags[name] = truncated
             result.total_chars += len(text)
@@ -425,6 +481,19 @@ class PersistenceStore:
         ts = _utcnow().strftime("%Y-%m-%dT%H-%M-%SZ")
         backup_path = backup_dir / f"{path.name}.{ts}.bak"
         backup_path.write_bytes(path.read_bytes())
+        # Rotação: manter apenas os últimos N backups deste arquivo.
+        # Timestamp ISO-8601 é ordenável lexicograficamente (ordem inversa
+        # = mais recente primeiro).
+        backups = sorted(
+            backup_dir.glob(f"{path.name}.*.bak"),
+            key=lambda p: p.name,
+            reverse=True,
+        )
+        for old in backups[self._backup_keep :]:
+            try:
+                old.unlink()
+            except OSError:
+                pass
 
 
 def _replace_section(
@@ -434,13 +503,18 @@ def _replace_section(
 ) -> tuple[str, bool]:
     """Replace the section starting with ``## <anchor>`` up to the next ``## ``.
 
-    Returns the updated text and whether the anchor was matched.
+    Matching is case-insensitive and tolerates accidental ``#`` prefixes in
+    the anchor (the anchor is normalized before comparison). Returns the
+    updated text and whether the anchor was matched.
     """
     lines = text.splitlines(keepends=True)
-    header = f"## {anchor}"
+    anchor_text = _normalize_section_header(anchor)
+    if not anchor_text:
+        return text, False
+    target = f"## {anchor_text}".lower()
     start_idx: int | None = None
     for i, line in enumerate(lines):
-        if line.rstrip() == header:
+        if line.rstrip().lower() == target:
             start_idx = i
             break
 

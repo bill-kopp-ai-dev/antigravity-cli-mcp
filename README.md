@@ -65,14 +65,34 @@ A local STDIO MCP server that exposes tools and reusable prompts for running the
 
 ## Persistent Memory
 
-This MCP server ships with a file-based persistence layer at
-`~/.open-cli-router/agy/`. The orchestrator (Trae IDE) gets editable
-markdown files for system prompt (`AGENTS.md`), project summaries
-(`PROJECTS.md`), and permanent memory (`MEMORY.md`). When enabled, the
-server automatically prepends excerpts of these files to the prompt sent
-to `agy` so context survives across sessions. See
-[PLAN_PERSISTENCE.md](PLAN_PERSISTENCE.md) and
+This MCP server ships with a file-based persistence layer. The
+orchestrator (Trae IDE) gets editable markdown files for system prompt
+(`AGENTS.md`), project summaries (`PROJECTS.md`), and permanent memory
+(`MEMORY.md`). When enabled, the server automatically prepends excerpts
+of these files to the prompt sent to `agy` so context survives across
+sessions. See [PLAN_PERSISTENCE.md](PLAN_PERSISTENCE.md) and
 [CONTRATO_TOOLS.md](CONTRATO_TOOLS.md) for details.
+
+### Storage location: global vs workspace
+
+The persistence directory can live in **two places**, controlled by
+`AGY_MCP_PERSISTENCE_LOCATION`:
+
+| Mode | Location | Use case |
+|------|----------|----------|
+| `global` (default) | `~/.open-cli-router/agy/` | User-level, persists across projects, survives `cd` |
+| `workspace` | `<cwd_parent>/.open-cli-router/agy/` | Project-level, can be committed (use `.gitignore`!), portable with the repo |
+
+`<cwd_parent>` is the parent of the server's CWD — for a typical setup,
+the server's CWD is the server project directory (e.g.
+`/home/user/CLI-router-project/antigravity-cli-mcp`), so the workspace
+mode resolves to `/home/user/CLI-router-project/.open-cli-router/agy/`.
+
+**Escape hatch:** `AGY_MCP_PERSISTENCE_BASE_DIR="$cwd_parent/custom"` lets
+you pick any custom subdirectory under the workspace root.
+
+> ⚠️ When using `workspace` mode, add `.open-cli-router/` to `.gitignore`
+> to avoid accidentally committing agent memory to source control.
 
 ### Two-level configuration
 
@@ -83,17 +103,20 @@ Persistence is controlled by **both** server-level environment variables and run
 | Variable | Purpose | Default |
 |----------|---------|---------|
 | `AGY_MCP_PERSISTENCE_ENABLED` | Master switch for the persistence feature | `true` |
-| `AGY_MCP_PERSISTENCE_BASE_DIR` | Base directory; the namespace `agy` is appended automatically | `~/.open-cli-router` |
+| `AGY_MCP_PERSISTENCE_LOCATION` | `"global"` (in `~`) or `"workspace"` (in `<cwd_parent>/.open-cli-router/`) | `global` |
+| `AGY_MCP_PERSISTENCE_BASE_DIR` | Base directory; the namespace `agy` is appended automatically. Supports `$cwd_parent` token for custom workspace paths. | `~/.open-cli-router` |
 | `AGY_MCP_PERSISTENCE_MAX_FILE_BYTES` | Maximum size per file before writes are rejected | `524288` (512 KiB) |
 | `AGY_MCP_PERSISTENCE_BACKUP_ON_WRITE` | Create `.bak` before each modification | `false` |
+| `AGY_MCP_PERSISTENCE_BACKUP_KEEP` | Number of `.bak` files to retain per source file (rotation) | `10` |
 | `AGY_MCP_PERSISTENCE_SEED_TEMPLATES` | Seed default markdown content when initializing | `true` |
+| `AGY_MCP_PERSISTENCE_TRUNCATION_HEAD_RATIO` | Fraction of `max_chars_per_file` preserved at head (rest is tail). Lower = more recency. | `0.2` (20% head / 80% tail) |
 
 **Runtime level** (called by the orchestrator via MCP tools):
 
-1. **Initialize once** — call `agy_init_persistence` to create `~/.open-cli-router/agy/` and seed the three files.
+1. **Initialize once** — call `agy_init_persistence` to create the directory and seed the three files.
 2. **Load context** — call `agy_load_persistence_context` at the start of each session to inject excerpts into the next prompt.
 3. **Append session notes** — after meaningful work, call `agy_append_persistence` on `MEMORY.md`.
-4. **Update structured sections** — when the user changes `AGENTS.md` or `PROJECTS.md`, call `agy_update_persistence` to persist.
+4. **Update structured sections** — when the user changes `AGENTS.md` or `PROJECTS.md`, call `agy_update_persistence` to persist. **Note:** updating `AGENTS.md` in safe mode requires `confirm=true`.
 
 Without step 1, persistence is **enabled but uninitialized** — the server will not inject any context until the directory exists.
 
@@ -109,7 +132,7 @@ Once both the MCP client configuration and the server are running, ask the orche
 Please call agy_init_persistence to create the persistence directory.
 ```
 
-The tool seeds `AGENTS.md`, `PROJECTS.md`, `MEMORY.md`, and a `.initialized` marker under `~/.open-cli-router/agy/`.
+The tool seeds `AGENTS.md`, `PROJECTS.md`, `MEMORY.md`, and a `.initialized` marker under the resolved base dir (either `~/.open-cli-router/agy/` or `<workspace>/.open-cli-router/agy/` depending on `persistence_location`).
 
 **Option B — directly via Python (one-shot, useful for verification or first-time setup):**
 

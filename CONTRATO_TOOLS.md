@@ -171,8 +171,12 @@ Replace a section in a persistence file by heading anchor.
 Input: `AgyUpdatePersistenceRequest`
 - `file: "agents" | "projects" | "memory"`
 - `section_anchor: str` — heading text without the `## ` prefix
+  (matching is case-insensitive and strips leading `#` and whitespace)
 - `new_content: str`
 - `mode: "replace" | "append"` (default `"replace"`)
+- `confirm: bool` (default `false`) — **required `true`** when updating
+  `file="agents"` in safe mode (parity with `claude-code-cli-mcp`).
+  Raises `ValueError("CONFIRM_REQUIRED: ...")` if missing.
 
 Output: `AgyUpdatePersistenceResponse`
 - `file: str`, `section_anchor: str`
@@ -181,6 +185,13 @@ Output: `AgyUpdatePersistenceResponse`
 ### agy_load_persistence_context
 
 Load the persistence files as truncated excerpts for a session.
+
+Truncation strategy (Phase 3, C4):
+- Default is **asymmetric**: 20% head + 80% tail (configurable via
+  `AGY_MCP_PERSISTENCE_TRUNCATION_HEAD_RATIO`). This favors recency
+  over ancient history.
+- The marker between head and tail includes the number of chars
+  omitted: `[truncated N chars]`.
 
 Input: `AgyLoadPersistenceContextRequest`
 - `include: list["agents" | "projects" | "memory"]` (default all three)
@@ -193,10 +204,19 @@ Output: `AgyLoadPersistenceContextResponse`
 
 Persistence settings (env vars, all `AGY_MCP_PERSISTENCE_*`):
 - `AGY_MCP_PERSISTENCE_ENABLED` (default `true`)
-- `AGY_MCP_PERSISTENCE_BASE_DIR` (default `~/.open-cli-router`)
-- `AGY_MCP_PERSISTENCE_MAX_FILE_BYTES` (default `524288`)
+- `AGY_MCP_PERSISTENCE_LOCATION` (default `global`) — `"global"` or
+  `"workspace"`. When `"workspace"`, files live in
+  `<cwd_parent>/.open-cli-router/agy/` instead of `~/.open-cli-router/agy/`.
+- `AGY_MCP_PERSISTENCE_BASE_DIR` (default `~/.open-cli-router`) — accepts
+  the special token `$cwd_parent` (parent of the server's CWD) for
+  custom paths, e.g. `$cwd_parent/.my-persistence`.
+- `AGY_MCP_PERSISTENCE_MAX_FILE_BYTES` (default `524288` / 512 KiB)
 - `AGY_MCP_PERSISTENCE_BACKUP_ON_WRITE` (default `false`)
+- `AGY_MCP_PERSISTENCE_BACKUP_KEEP` (default `10`) — number of `.bak`
+  files to retain per source file (Phase 3, C3).
 - `AGY_MCP_PERSISTENCE_SEED_TEMPLATES` (default `true`)
+- `AGY_MCP_PERSISTENCE_TRUNCATION_HEAD_RATIO` (default `0.2`) — fraction
+  of `max_chars_per_file` preserved at the head (Phase 3, C4).
 
 ## Prompts
 

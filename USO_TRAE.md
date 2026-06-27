@@ -143,6 +143,41 @@ Precedence:
 2. `.env`
 3. code defaults
 
+### Persistence location: global vs workspace
+
+The persistence directory can live in **two places**, controlled by `AGY_MCP_PERSISTENCE_LOCATION`:
+
+| Mode | Resolved path (typical setup) | Use case |
+|------|------------------------------|----------|
+| `global` (default) | `~/.open-cli-router/agy/` | User-level, survives `cd`, not project-tied |
+| `workspace` | `<cwd_parent>/.open-cli-router/agy/` | Project-level, portable, can be committed (use `.gitignore`!) |
+
+`<cwd_parent>` is the parent of the server's CWD. For the config above where `cwd` is `/path/to/antigravity-cli-mcp`, `cwd_parent` is `/path/to` (the user's workspace root).
+
+**Example — workspace mode in Trae's MCP config:**
+
+```jsonc
+{
+  "mcpServers": {
+    "agy-mcp-server": {
+      "command": "uvx",
+      "args": [...],
+      "cwd": "/path/to/antigravity-cli-mcp",
+      "env": {
+        "AGY_MCP_PERSISTENCE_ENABLED": "true",
+        "AGY_MCP_PERSISTENCE_LOCATION": "workspace"
+        // Optional custom path (overrides LOCATION):
+        // "AGY_MCP_PERSISTENCE_BASE_DIR": "$cwd_parent/.my-persistence"
+      }
+    }
+  }
+}
+```
+
+With the snippet above, persistence files live at `/path/to/.open-cli-router/agy/`. Remember to add `.open-cli-router/` to `.gitignore` if your workspace is a git repo.
+
+**Escape hatch:** `AGY_MCP_PERSISTENCE_BASE_DIR="$cwd_parent/custom"` accepts any custom subdirectory under the workspace root, regardless of `LOCATION`.
+
 ## 5) Example Calls
 
 ### 5.1 Health check

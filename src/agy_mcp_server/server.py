@@ -77,7 +77,7 @@ from agy_mcp_server.models import (
     AgyToolSchemaReport,
 )
 from agy_mcp_server.provider import tool_name, prompt_name, PROVIDER_PREFIX
-from agy_mcp_server.persistence import PersistenceStore
+from agy_mcp_server.persistence import PersistenceStore, build_prompt_with_context
 from agy_mcp_server.quota import (
     KNOWN_MODELS,
     QuotaStatus as InternalQuotaStatus,
@@ -103,11 +103,16 @@ _active_runs_lock = threading.Lock()
 _active_runs: dict[str, "ActiveRun"] = {}
 
 # Persistence store — file-based memory layer for AGENTS.md, PROJECTS.md, MEMORY.md.
+# base_dir resolution: Settings.resolve_persistence_base_dir() honors
+# persistence_location ("global" vs "workspace") and the $cwd_parent
+# escape hatch in persistence_base_dir.
 _persistence_store = PersistenceStore(
-    base_dir=_settings.persistence_base_dir,
+    base_dir=_settings.resolve_persistence_base_dir(),
     max_file_bytes=_settings.persistence_max_file_bytes,
     backup_on_write=_settings.persistence_backup_on_write,
+    backup_keep=_settings.persistence_backup_keep,
     seed_templates=_settings.persistence_seed_templates,
+    head_ratio=_settings.persistence_truncation_head_ratio,
 )
 
 # Quota tracker is constructed from settings; a fresh instance is used per
@@ -639,35 +644,10 @@ def agy_run_task(req: AgyRunTaskRequestIn | None = None) -> AgyRunTaskResponse:
     _validate_exec_options(req)
 
     # Optional: load persistent context and prepend to the prompt.
-    # Failures are non-fatal — the run continues without context.
-    prompt_text = req.prompt
-    if _settings.persistence_enabled and _persistence_store.is_initialized:
-        try:
-            ctx = _persistence_store.load_context()
-            header_parts = []
-            if ctx.agents_excerpt:
-                header_parts.append(
-                    "<persistent-agents-context>\n"
-                    f"{ctx.agents_excerpt}\n"
-                    "</persistent-agents-context>"
-                )
-            if ctx.projects_excerpt:
-                header_parts.append(
-                    "<persistent-projects-context>\n"
-                    f"{ctx.projects_excerpt}\n"
-                    "</persistent-projects-context>"
-                )
-            if ctx.memory_excerpt:
-                header_parts.append(
-                    "<persistent-memory-context>\n"
-                    f"{ctx.memory_excerpt}\n"
-                    "</persistent-memory-context>"
-                )
-            if header_parts:
-                prompt_text = "\n\n".join(header_parts) + "\n\n" + prompt_text
-        except Exception:
-            # Non-fatal: continue without persistent context.
-            pass
+    # Failures are non-fatal — handled inside the helper.
+    prompt_text = build_prompt_with_context(
+        req.prompt, settings=_settings, store=_persistence_store
+    )
 
     before_snapshot = None
     if req.capture_changes and not is_git_repo(workspace) and req.change_scope == "workspace":
@@ -775,34 +755,10 @@ def agy_start_task(req: AgyStartTaskRequestIn | None = None) -> AgyStartTaskResp
     _validate_exec_options(req)
 
     # Optional: load persistent context and prepend to the prompt.
-    # Failures are non-fatal — the run continues without context.
-    prompt_text = req.prompt
-    if _settings.persistence_enabled and _persistence_store.is_initialized:
-        try:
-            ctx = _persistence_store.load_context()
-            header_parts = []
-            if ctx.agents_excerpt:
-                header_parts.append(
-                    "<persistent-agents-context>\n"
-                    f"{ctx.agents_excerpt}\n"
-                    "</persistent-agents-context>"
-                )
-            if ctx.projects_excerpt:
-                header_parts.append(
-                    "<persistent-projects-context>\n"
-                    f"{ctx.projects_excerpt}\n"
-                    "</persistent-projects-context>"
-                )
-            if ctx.memory_excerpt:
-                header_parts.append(
-                    "<persistent-memory-context>\n"
-                    f"{ctx.memory_excerpt}\n"
-                    "</persistent-memory-context>"
-                )
-            if header_parts:
-                prompt_text = "\n\n".join(header_parts) + "\n\n" + prompt_text
-        except Exception:
-            pass
+    # Failures are non-fatal — handled inside the helper.
+    prompt_text = build_prompt_with_context(
+        req.prompt, settings=_settings, store=_persistence_store
+    )
 
     before_snapshot = None
     if req.capture_changes and not is_git_repo(workspace) and req.change_scope == "workspace":
@@ -1418,6 +1374,14 @@ def agy_update_persistence(
             "PERSISTENCE_DISABLED: persistence is disabled via settings"
         )
 
+    # Paridade com claude-code-cli-mcp: em safe mode, atualizar AGENTS.md
+    # (system-prompt editável) exige confirm=true explícito para evitar
+    # sobrescrita acidental do system prompt.
+    if req.file == "agents" and _settings.mode == "safe" and not req.confirm:
+        raise ValueError(
+            "CONFIRM_REQUIRED: updating AGENTS.md in safe mode requires confirm=true"
+        )
+
     result = _persistence_store.update(
         req.file,
         req.section_anchor,
@@ -1484,9 +1448,22 @@ def agy_load_persistence_context(
 @mcp.prompt(name=prompt_name("persistence_protocol"))
 def prompt_persistence_protocol() -> str:
     """Instruct the orchestrator on how to maintain the persistence layer."""
-    return (
-        "You have access to a persistent memory layer at "
-        "~/.open-cli-router/{provider}/ with three editable files:\n"
+    base = _settings.resolve_persistence_base_dir()
+    location_note = (
+        f"NOTE: persistence is configured with LOCATION="
+        f"{_settings.persistence_location} → base_dir={base}\n"
+    )
+    if _settings.persistence_location == "workspace":
+        location_note += (
+            "When location='workspace', the files live in your project "
+            "directory (one level up from the server's CWD).\n"
+            "Consider adding '.open-cli-router/' to .gitignore to avoid "
+            "committing agent memory to source control.\n"
+        )
+    location_note += "\n"
+
+    return (location_note + (
+        "You have access to a persistent memory layer with three editable files:\n"
         "- AGENTS.md (your editable system prompt)\n"
         "- PROJECTS.md (project summaries)\n"
         "- MEMORY.md (permanent memory)\n"
@@ -1503,7 +1480,7 @@ def prompt_persistence_protocol() -> str:
         "\n"
         "Do not store secrets, credentials, or full file dumps in "
         "MEMORY.md — keep entries small and high-signal.\n"
-    ).replace("{provider}", PROVIDER_PREFIX)
+    )).replace("{provider}", PROVIDER_PREFIX)
 
 
 @mcp.prompt(name=prompt_name("quickstart"))

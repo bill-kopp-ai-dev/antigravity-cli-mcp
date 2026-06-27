@@ -509,12 +509,139 @@ Estimativa de ordem: **3 a 5 dias de trabalho**, similar ao `agy_quota`.
 
 ---
 
-## 16. Próximos passos (após aprovação)
+## 16. Refatoração 2026-06 (changelog)
 
-1. Implementar Phase 1 (paths + settings) → commit.
-2. Phase 2 (store) → commit.
-3. Phase 3 (tools) → commit + rodar `agy_init_persistence` manualmente para
-   validar.
-4. Phase 4 (prompt + integração) → commit + testar com Trae real.
-5. Phase 5 (docs) → commit final.
-6. Phase 6 (verificação multi-provider) → opcional, via `monkeypatch`.
+Esta refatoração endereçou 13 problemas mapeados em [PERSISTENCE_ANALYSIS.md](file:///home/bill/Codes/CLI-router-project/PERSISTENCE_ANALYSIS.md) e adicionou 1 feature nova. Executada em 7 fases, todas entregues.
+
+### Phase 1 — Bug fixes (paridade com claude)
+
+- Adicionado campo `confirm: bool = False` no `AgyUpdatePersistenceRequest`.
+- Adicionado enforcement em `agy_update_persistence`: em `mode="safe"`, atualizar
+  `AGENTS.md` exige `confirm=true` (senão `ValueError("CONFIRM_REQUIRED: ...")`).
+- 7 testes novos cobrindo: default False, safe mode + sem confirm → raise,
+  safe mode + confirm → ok, memory/projects safe mode → ok, permissive → ok,
+  persistence_enabled=false falha antes do check de confirm.
+
+### Phase 2 — Consistência de design
+
+- Introduzida constante `PERSISTENCE_NAMESPACE = "agy"` em
+  [agy_mcp_server/provider.py](file:///home/bill/Codes/CLI-router-project/antigravity-cli-mcp/src/agy_mcp_server/provider.py)
+  (paridade com `claude-code-cli-mcp` onde `PROVIDER_PREFIX="claude"` e
+  `PERSISTENCE_NAMESPACE="claude-code"`).
+- Migrado `persistence/paths.py` para usar `PERSISTENCE_NAMESPACE` em vez de
+  `PROVIDER_PREFIX` para resolver o diretório em disco. `PROVIDER_PREFIX`
+  continua sendo usado para renderizar `{provider}` no template.
+- 3 testes novos: `test_provider_namespace_uses_namespace_constant`,
+  `test_provider_namespace_decoupled_from_prefix`,
+  `test_paths_module_uses_namespace_not_prefix` (regressão).
+- Decisão documentada: `persistence_max_file_bytes` default mantido em
+  512 KiB (agy é referência; claude será alinhado em plano separado).
+
+### Phase 3 — Robustez do store
+
+- **C1 (section_header normalization):** novo helper
+  `_normalize_section_header()` usa regex `^[#\s]+` para remover prefixos
+  `#` e whitespace. Bug C1 (cliente enviando `"## foo"` gerava `## ## foo`)
+  corrigido. Dedup agora é **case-insensitive** via `_header_line_exists()`.
+  Header que normaliza para vazio lança `ValueError("INVALID_SECTION_HEADER")`.
+- **C2 (anchor case-insensitive):** `_replace_section()` normaliza o anchor
+  e faz match via `.lower()`.
+- **C3 (backup rotation):** setting `persistence_backup_keep: int = 10`.
+  `_maybe_backup()` agora ordena por timestamp ISO e remove os excedentes.
+- **C4 (truncamento assimétrico):** setting `persistence_truncation_head_ratio:
+  float = 0.2`. `load_context()` calcula `head_size=int(max_chars*head_ratio)`,
+  marker agora inclui `[truncated N chars]` em vez de `[truncated]`.
+- **C5 (read() truncated flag):** lógica corrigida: `truncated = remaining_after_offset > len(data)` quando `limit` set, ou `stat.st_size > max_file_bytes` quando sem `limit`.
+- 17 testes novos cobrindo os 5 itens.
+
+### Phase 4 — Refatoração de integração
+
+- Novo módulo
+  [persistence/context.py](file:///home/bill/Codes/CLI-router-project/antigravity-cli-mcp/src/agy_mcp_server/persistence/context.py)
+  com helper `build_prompt_with_context()` (duck-typed via Protocol para
+  evitar import cycle com `settings.py`).
+- Exportado em `persistence/__init__.py`.
+- `agy_run_task` e `agy_start_task` refatorados: ~54 linhas inline duplicadas
+  → 8 linhas usando o helper.
+- 12 testes novos em `tests/test_persistence_context.py` cobrindo todos os
+  caminhos: disabled, uninitialized, prepend completo, ordem dos tags,
+  skip de None, all-empty, failure (RuntimeError, OSError), integração com
+  store real.
+
+### Phase 5 — Feature nova: `persistence_location`
+
+- Setting novo `persistence_location: Literal["global", "workspace"] = "global"`.
+- Setting novo `persistence_backup_keep: int = 10` (Phase 3, integrado no
+  bootstrap).
+- Setting novo `persistence_truncation_head_ratio: float = 0.2` (Phase 3,
+  integrado no bootstrap).
+- Método novo `Settings.resolve_persistence_base_dir()` com 3 modos:
+  1. `$cwd_parent` token em `persistence_base_dir` (escape hatch, precedência máxima).
+  2. `location="workspace"` → `<cwd_parent>/.open-cli-router/`.
+  3. Default → `persistence_base_dir` expandido (comportamento legado).
+- Bootstrap do `server.py` agora chama `_settings.resolve_persistence_base_dir()`
+  e propaga `backup_keep` + `head_ratio` para o `PersistenceStore`.
+- `prompt_persistence_protocol` agora inclui nota sobre `persistence_location`
+  e warning sobre `.gitignore` em modo workspace.
+- `.env.example` documenta todas as variáveis novas com exemplos comentados.
+- 18 testes novos em `tests/test_persistence_location.py` cobrindo: default
+  global, workspace mode, `$cwd_parent` token, validação (location inválido
+  → ValidationError), cross-mode isolation, settings integration.
+
+### Phase 6 — Testes de integração (gap §4 do diagnóstico)
+
+- 15 testes novos em `tests/test_persistence_integration.py` cobrindo os 8 gaps
+  identificados:
+  - `agy_persistence_protocol` registrado em `mcp.list_prompts()` (usa
+    `asyncio.run` para consumir a coroutine).
+  - `agy_run_task` prepende tags XML do contexto persistente em modo normal.
+  - `agy_run_task` continua sem contexto se `load_context` lança
+    `RuntimeError` ou `OSError` (não-fatal).
+  - `agy_run_task` pula contexto se `persistence_enabled=False` ou
+    `is_initialized=False`.
+  - `load_context().initialized` reflete o `.initialized` marker em disco.
+  - `resolve_file_path` recusa `..` e symlink escape via `is_relative_to`.
+  - `load_context()` respeita `max_chars_per_file`: `total_chars` reflete o
+    excerpt truncado, não o arquivo original.
+
+### Phase 7 — Documentação + migração
+
+- `CONTRATO_TOOLS.md`: documentação de `confirm`, novos env vars, truncation
+  assimétrica.
+- `README.md`: nova seção "Storage location: global vs workspace" com tabela,
+  warning sobre `.gitignore`, atualização dos defaults.
+- `USO_TRAE.md`: nova subseção "Persistence location: global vs workspace"
+  com exemplo de config Trae para workspace mode e nota sobre escape hatch.
+- `PLAN_PERSISTENCE.md`: este §16 (changelog).
+- `MCP_USER_GUIDE.md` raiz: (atualizado em plano separado se necessário).
+- **Migração automática:** **não incluída**. Usuário que muda de
+  `global` para `workspace` deve mover manualmente os arquivos existentes:
+  ```bash
+  mv ~/.open-cli-router/agy <cwd_parent>/.open-cli-router/agy
+  ```
+
+### Métricas finais
+
+| Métrica | Antes (PERSISTENCE_ANALYSIS §0) | Depois |
+|---|---|---|
+| Testes em `test_persistence*.py` | 25 | 88 |
+| Total de testes | 72 | 144 |
+| Divergências com claude | 5 | 0 (parity total) |
+| Bugs em runtime | 2 (`## ## foo`, template errado) | 0 (cobertos por testes) |
+| Features | 5 tools + 1 prompt | 5 tools + 1 prompt (mesmas) + `persistence_location` + `$cwd_parent` escape hatch |
+| LOC em `server.py` (injeção de contexto) | ~54 inline duplicado | 8 (helper compartilhado) |
+
+**Compatibilidade:** zero impacto em setups existentes — todos os settings
+novos têm defaults que reproduzem o comportamento anterior.
+
+### Pendente (deferido para v2)
+
+- D1 Dream cycle / Consolidator
+- D2 Versionamento Git automático
+- D3 `{provider}_search_persistence`
+- D4 Export/import tool
+- D5 Métricas em `agy_status`
+- D6 `render_session_entry` helper
+- C6 Lock per-file
+- C7 Cross-MCP awareness
+- Migration tool automática entre `global` ↔ `workspace`

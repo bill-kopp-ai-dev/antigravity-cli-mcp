@@ -1,8 +1,15 @@
 """Path resolution for the persistence layer.
 
 Centralizes all path logic so forking the server to another CLI provider
-only requires changing ``PROVIDER_PREFIX`` — the namespace directory is
-derived automatically.
+only requires changing ``PERSISTENCE_NAMESPACE`` in
+:mod:`agy_mcp_server.provider` — the namespace directory is derived
+automatically.
+
+Note: paths.py uses ``PERSISTENCE_NAMESPACE`` (the on-disk directory
+name) rather than ``PROVIDER_PREFIX`` (the MCP wire-format prefix).
+For agy these coincide ("agy"/"agy"); for forks they can differ
+(e.g. claude-code-cli-mcp uses PROVIDER_PREFIX="claude" but
+PERSISTENCE_NAMESPACE="claude-code").
 """
 
 from __future__ import annotations
@@ -25,13 +32,13 @@ INITIALIZED_MARKER = ".initialized"
 BACKUP_DIR_NAME = ".backups"
 
 
-def _current_provider_prefix() -> str:
-    """Return the active provider prefix.
+def _current_namespace() -> str:
+    """Return the active persistence namespace.
 
     Lookup is done via the module object so that ``monkeypatch.setattr`` on
-    ``agy_mcp_server.provider.PROVIDER_PREFIX`` propagates correctly.
+    ``agy_mcp_server.provider.PERSISTENCE_NAMESPACE`` propagates correctly.
     """
-    return _provider.PROVIDER_PREFIX
+    return _provider.PERSISTENCE_NAMESPACE
 
 
 def get_persistence_base_dir(base_dir: Path) -> Path:
@@ -51,10 +58,10 @@ def get_persistence_dir(base_dir: Path) -> Path:
     """Return the per-provider persistence directory.
 
     Example:
-        base_dir = ~/.open-cli-router, PROVIDER_PREFIX = "agy"
+        base_dir = ~/.open-cli-router, PERSISTENCE_NAMESPACE = "agy"
         → ~/.open-cli-router/agy
     """
-    return get_persistence_base_dir(base_dir) / _current_provider_prefix()
+    return get_persistence_base_dir(base_dir) / _current_namespace()
 
 
 def resolve_file_path(
@@ -84,15 +91,15 @@ def resolve_file_path(
         )
 
     resolved_base = base_dir_resolved or get_persistence_base_dir(base_dir)
-    prefix = _current_provider_prefix()
+    ns = _current_namespace()
     # Display filename is UPPERCASE per the public contract
     # (AGENTS.md, PROJECTS.md, MEMORY.md). The internal logical name
     # (used in tool payloads) remains lowercase.
-    target = (resolved_base / prefix / f"{file_name.upper()}.md").resolve()
+    target = (resolved_base / ns / f"{file_name.upper()}.md").resolve()
 
     # Defense in depth: even with the Literal check, refuse if the resolved
     # path escapes the namespace directory.
-    expected_prefix = (resolved_base / prefix).resolve()
+    expected_prefix = (resolved_base / ns).resolve()
     if not target.is_relative_to(expected_prefix):
         raise ValueError(
             f"PATH_TRAVERSAL: resolved path {target} escapes {expected_prefix}"
