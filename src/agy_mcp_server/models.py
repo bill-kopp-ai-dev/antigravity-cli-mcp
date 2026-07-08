@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
+from enum import Enum
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, BeforeValidator, Field, StrictBool
@@ -324,4 +326,51 @@ class AgySelfTestResponse(BaseModel):
     tools: list[AgyToolSchemaReport] = Field(default_factory=list)
     server_info: dict[str, Any] = Field(default_factory=dict)
     summary: str
+
+
+# ------------------------------------------------------------------
+# Quota profile registry (Sprint 2 — passive quota-awareness)
+#
+# NOTE: this is intentionally distinct from `QuotaTier` above (the
+# Literal used by the existing agy_quota tool, which includes
+# "unknown"). This registry models per-model call budgets and is
+# named `QuotaProfileTier` to avoid shadowing that existing alias.
+# ------------------------------------------------------------------
+
+
+class QuotaProfileTier(str, Enum):
+    FREE = "free"
+    PRO = "pro"
+    ULTRA = "ultra"
+    ENTERPRISE = "enterprise"
+
+
+@dataclass(frozen=True)
+class QuotaProfile:
+    tier: QuotaProfileTier
+    calls_per_window: int
+    window_hours: int = 5
+
+
+MODEL_QUOTA_REGISTRY: dict[str, QuotaProfile] = {
+    "gemini-2.5-pro": QuotaProfile(QuotaProfileTier.PRO, 1000, 5),
+    "gemini-2.5-flash": QuotaProfile(QuotaProfileTier.PRO, 2000, 5),
+    "gemini-2.0-flash": QuotaProfile(QuotaProfileTier.FREE, 100, 5),
+}
+
+DEFAULT_ACTIVE_MODEL = "gemini-2.5-flash"
+DEFAULT_QUOTA_TIER = QuotaProfileTier.PRO
+
+
+def resolve_quota_profile(model: str | None) -> QuotaProfile:
+    """Look up a QuotaProfile by exact model name.
+
+    Falls back to DEFAULT_ACTIVE_MODEL's profile, then a conservative
+    built-in default if that isn't registered either.
+    """
+    if model and model in MODEL_QUOTA_REGISTRY:
+        return MODEL_QUOTA_REGISTRY[model]
+    if DEFAULT_ACTIVE_MODEL in MODEL_QUOTA_REGISTRY:
+        return MODEL_QUOTA_REGISTRY[DEFAULT_ACTIVE_MODEL]
+    return QuotaProfile(DEFAULT_QUOTA_TIER, 100, 5)
 

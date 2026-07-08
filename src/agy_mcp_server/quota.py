@@ -25,6 +25,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Literal
 
+from .models import resolve_quota_profile
+
 logger = logging.getLogger(__name__)
 
 
@@ -139,6 +141,33 @@ class QuotaStatus:
     notes: list[str] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class QuotaSnapshot:
+    """Zero-cost snapshot of a model's current quota window, resolved from
+    `MODEL_QUOTA_REGISTRY` (see models.py) rather than a live probe call."""
+
+    model: str
+    used: int
+    limit: int
+    remaining: int
+    reset_at: float  # unix timestamp
+    window_remaining_seconds: int
+    warning: Literal["ok", "low", "exhausted"]
+    tier: str
+
+    def to_dict(self) -> dict:
+        return {
+            "model": self.model,
+            "used": self.used,
+            "limit": self.limit,
+            "remaining": self.remaining,
+            "reset_at": self.reset_at,
+            "window_remaining_seconds": self.window_remaining_seconds,
+            "warning": self.warning,
+            "tier": self.tier,
+        }
+
+
 class QuotaTracker:
     """Sliding-window local counter for agy calls per model.
 
@@ -214,6 +243,43 @@ class QuotaTracker:
                 source="local_counter",
                 notes=notes,
             )
+
+    def snapshot(self, model: str, *, low_threshold_pct: float = 20.0) -> QuotaSnapshot:
+        """Return a zero-cost snapshot of the current window state for `model`.
+
+        Unlike `status()`, the limit/tier are resolved from
+        `MODEL_QUOTA_REGISTRY` (per-model call budgets) rather than the
+        legacy `tier_limits` mapping. Acquires the existing instance lock
+        briefly to read the call list.
+        """
+        profile = resolve_quota_profile(model)
+        with self._lock:
+            now = time.time()
+            window_start = now - (profile.window_hours * 3600)
+            recent = [t for t in self._calls.get(model, ()) if t >= window_start]
+            used = len(recent)
+            limit = profile.calls_per_window
+            remaining = max(0, limit - used)
+            reset_at = (recent[0] + profile.window_hours * 3600) if recent else now
+            window_remaining = max(0, int(reset_at - now))
+
+        if remaining == 0:
+            warning: Literal["ok", "low", "exhausted"] = "exhausted"
+        elif (remaining / limit * 100) <= low_threshold_pct:
+            warning = "low"
+        else:
+            warning = "ok"
+
+        return QuotaSnapshot(
+            model=model,
+            used=used,
+            limit=limit,
+            remaining=remaining,
+            reset_at=reset_at,
+            window_remaining_seconds=window_remaining,
+            warning=warning,
+            tier=profile.tier.value,
+        )
 
     def all_known_models_status(self, tier: str) -> list[QuotaStatus]:
         return [self.status(m, tier) for m in sorted(KNOWN_MODELS)]

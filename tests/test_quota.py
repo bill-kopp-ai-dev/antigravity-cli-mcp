@@ -7,11 +7,13 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from agy_mcp_server.models import DEFAULT_ACTIVE_MODEL, MODEL_QUOTA_REGISTRY
 from agy_mcp_server.quota import (
     DEFAULT_PERIOD_HOURS,
     DEFAULT_TIER_LIMITS,
     FailureKind,
     KNOWN_MODELS,
+    QuotaSnapshot,
     QuotaStatus,
     QuotaTracker,
     classify_agy_failure,
@@ -204,6 +206,76 @@ class TestQuotaTrackerConcurrency:
 
         s = t.status("shared", tier="pro")
         assert s.used == 1000  # 10 threads * 100 calls
+
+
+# ----------------------------------------------------------------------
+# QuotaTracker.snapshot()
+# ----------------------------------------------------------------------
+
+class TestQuotaSnapshot:
+    def test_snapshot_returns_zero_when_no_calls(self):
+        t = QuotaTracker()
+        snap = t.snapshot("gemini-2.5-pro")
+        assert isinstance(snap, QuotaSnapshot)
+        assert snap.used == 0
+        assert snap.limit == 1000
+        assert snap.remaining == 1000
+        assert snap.warning == "ok"
+
+    def test_snapshot_counts_only_in_window(self):
+        t = QuotaTracker()
+        for _ in range(3):
+            t.record_call("gemini-2.5-pro")
+        snap = t.snapshot("gemini-2.5-pro")
+        assert snap.used == 3
+        assert snap.remaining == 997
+
+    def test_snapshot_warning_ok_when_above_threshold(self):
+        t = QuotaTracker()
+        for _ in range(5):
+            t.record_call("gemini-2.5-pro")
+        snap = t.snapshot("gemini-2.5-pro")
+        assert snap.used == 5
+        assert snap.warning == "ok"
+
+    def test_snapshot_warning_low_at_threshold(self):
+        t = QuotaTracker()
+        for _ in range(800):
+            t.record_call("gemini-2.5-pro")
+        snap = t.snapshot("gemini-2.5-pro")
+        assert snap.remaining == 200
+        assert snap.warning == "low"
+
+    def test_snapshot_warning_exhausted_at_zero_remaining(self):
+        t = QuotaTracker()
+        for _ in range(1000):
+            t.record_call("gemini-2.5-pro")
+        snap = t.snapshot("gemini-2.5-pro")
+        assert snap.remaining == 0
+        assert snap.warning == "exhausted"
+
+    def test_snapshot_resolves_unknown_model_to_default(self):
+        t = QuotaTracker()
+        snap = t.snapshot("unknown-model-xyz")
+        expected_limit = MODEL_QUOTA_REGISTRY[DEFAULT_ACTIVE_MODEL].calls_per_window
+        assert snap.limit == expected_limit
+        assert snap.model == "unknown-model-xyz"
+
+    def test_snapshot_includes_tier_and_window_seconds(self):
+        t = QuotaTracker()
+        snap = t.snapshot("gemini-2.5-pro")
+        assert snap.tier == "pro"
+        assert snap.window_remaining_seconds == 0
+
+    def test_snapshot_to_dict_round_trips_fields(self):
+        t = QuotaTracker()
+        t.record_call("gemini-2.5-flash")
+        snap = t.snapshot("gemini-2.5-flash")
+        d = snap.to_dict()
+        assert d["model"] == "gemini-2.5-flash"
+        assert d["used"] == 1
+        assert d["limit"] == 2000
+        assert d["warning"] == "ok"
 
 
 # ----------------------------------------------------------------------
