@@ -38,6 +38,10 @@ class Settings(BaseSettings):
     quota_active_model: str = "unknown"
     quota_tier: Literal["free", "pro", "ultra", "enterprise", "unknown"] = "unknown"
     quota_period_hours: float = 5.0
+    # Sprint 3: active quota enforcement (default OFF — opt-in flag).
+    quota_policy_enabled: bool = False
+    allow_overage: bool = False
+    quota_low_threshold_pct: float = 20.0
     quota_tier_limits: dict[str, int] = Field(
         default_factory=lambda: {
             "free": 30,

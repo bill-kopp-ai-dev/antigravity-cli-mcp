@@ -343,6 +343,15 @@ def _finalize_active_run(run: ActiveRun) -> None:
 
     # Quota tracking: record the call and classify any failure.
     _quota_tracker.record_call(_settings.quota_active_model)
+    if _settings.quota_policy_enabled and not _settings.allow_overage:
+        _gate_snap = _quota_tracker.snapshot(_settings.quota_active_model)
+        if _gate_snap.warning == "exhausted":
+            raise QuotaExhaustedError(
+                model=_gate_snap.model,
+                used=_gate_snap.used,
+                limit=_gate_snap.limit,
+                reset_in_seconds=_gate_snap.window_remaining_seconds,
+            )
     if exit_code != 0 or timed_out:
         _quota_tracker.record_failure(
             classify_agy_failure(exit_code, stdout, stderr, timed_out)
@@ -670,6 +679,16 @@ def agy_run_task(req: AgyRunTaskRequestIn | None = None) -> AgyRunTaskResponse:
         _quota_tracker.record_failure(
             classify_agy_failure(exit_code, stdout, stderr, timed_out)
         )
+
+    if _settings.quota_policy_enabled and not _settings.allow_overage:
+        _snap = _quota_tracker.snapshot(_settings.quota_active_model)
+        if _snap.warning == "exhausted":
+            raise QuotaExhaustedError(
+                model=_snap.model,
+                used=_snap.used,
+                limit=_snap.limit,
+                reset_in_seconds=_snap.window_remaining_seconds,
+            )
 
     stdout = stdout[: _settings.max_output_bytes]
     stderr = stderr[: _settings.max_output_bytes]
@@ -1710,6 +1729,22 @@ def agy_self_test(req: AgySelfTestRequestIn | None = None) -> AgySelfTestRespons
         server_info={"name": "agy-mcp-server", "version": "3.4.2"},
         summary=f"{len(reports)} tools inspected: {tolerant} tolerant to args={{}}, {requires_req} still require `req` wrapper",
     )
+
+
+class QuotaExhaustedError(Exception):
+    """Raised when an agy call would exceed the per-window quota and the
+    active quota policy is enabled with overage disabled."""
+
+    def __init__(self, *, model: str, used: int, limit: int, reset_in_seconds: int) -> None:
+        self.model = model
+        self.used = used
+        self.limit = limit
+        self.reset_in_seconds = reset_in_seconds
+        super().__init__(
+            f"QUOTA_EXHAUSTED: model={model!r} used={used}/{limit} "
+            f"(resets in {reset_in_seconds}s). "
+            f"Set AGY_MCP_ALLOW_OVERAGE=true to bypass, or wait for window reset."
+        )
 
 
 def main() -> None:
