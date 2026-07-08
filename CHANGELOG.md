@@ -10,11 +10,17 @@ All notable changes to this project will be documented in this file.
 - `AGY_MCP_ALLOW_OVERAGE` setting (default `false`).
 - `AGY_MCP_QUOTA_LOW_THRESHOLD_PCT` setting (default `20.0`).
 - `QuotaExhaustedError` exception carrying `model`, `used`, `limit`, `reset_in_seconds`.
-- Tests: 6 new in `tests/test_quota_enforcement.py`.
+- Tests: 8 new in `tests/test_quota_enforcement.py` (gate-mirror coverage of `agy_run_task` policy flow).
+- Sprint N+1 S4 — `CONTRATO_TOOLS.md` extended with full user-facing
+  contracts for all 14 tools (incl. `agy_self_test`, `agy_clear_cache`)
+  plus the quota runtime contract (`QuotaExhaustedError`, settings registry).
+- Sprint N+1 S4 — `tests/test_contrato_drift.py` (13 tests) keeps the
+  Markdown contract and the FastMCP tool registry in sync.
 
 ### Notes
 
-- Project version remains `0.1.0`; this is a backwards-compatible feature addition under the same version (deferring the `0.2.0` bump until quota `agy_self_test` doc lands in S4 to bundle the user-facing contract change). Feature flags default off — no behaviour change for existing users.
+- Project version remains `0.1.0`; this is a backwards-compatible feature addition under the same version. The `0.2.0` bump is reserved for the next window where the public contract changes for users (default settings change).
+- Feature flags default `off` — no behaviour change for existing users.
 
 ## 0.1.0 (2026-07-08)
 

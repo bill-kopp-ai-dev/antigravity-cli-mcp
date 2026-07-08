@@ -15,6 +15,36 @@ Output: `AgyHealthResponse`
 - `ok: bool`
 - `notes: list[str]`
 
+### agy_clear_cache
+
+Clear the uv package cache to resolve stale-package import errors.
+
+When the MCP server fails to start with errors like:
+`ImportError: cannot import name 'Xxx' from 'agy_mcp_server'`
+and restarting / clearing uvx cache manually does not resolve it, this
+tool runs `uv cache clean` to remove all cached package archives.
+
+**Behaviour:**
+- By default (`full=false`), clears only the uv cache directory
+  (`~/.cache/uv`). This is the safest option and resolves most
+  stale-cache issues without affecting other projects.
+- With `full=true`, clears the entire uv cache — useful when the
+  server is launched via `--from <path>` and the archive hash keeps
+  being reused across sessions.
+
+**Warning:** clearing the cache causes subsequent `uvx` invocations to
+re-download and re-install dependencies (slower first startup after
+clean).
+
+Input: `AgyClearCacheRequest`
+- `full: bool`
+
+Output: `AgyClearCacheResponse`
+- `cleared: bool`
+- `entries_removed: int` — estimate
+- `cache_dir: str`
+- `notes: list[str]`
+
 ### agy_run_task
 
 Input: `AgyRunTaskRequest`
@@ -27,6 +57,8 @@ Input: `AgyRunTaskRequest`
 Output: `AgyRunTaskResponse`
 - `result: AgyRunResult`
 - `changes: WorkspaceChanges | None`
+- `quota_warning: "ok" | "low" | "exhausted"` — added Sprint N+1 S2
+- `quota_remaining_pct: float` — 0.0–100.0, percent of remaining quota for the active model in the current 5h window. Added Sprint N+1 S2.
 
 ### agy_start_task
 
@@ -35,6 +67,8 @@ Input: `AgyStartTaskRequest` (same as `AgyRunTaskRequest`)
 Output: `AgyStartTaskResponse`
 - `run_id: str`
 - `started_at: datetime`
+- `quota_warning: "ok" | "low" | "exhausted"` — added Sprint N+1 S2
+- `quota_remaining_pct: float` — 0.0–100.0. Added Sprint N+1 S2.
 
 ### agy_poll_task
 
@@ -47,6 +81,33 @@ Output: `AgyPollTaskResponse`
 - `partial_stdout: str`
 - `partial_stderr: str`
 - `changes: WorkspaceChanges | None`
+- `quota_warning: "ok" | "low" | "exhausted"` — added Sprint N+1 S2
+- `quota_remaining_pct: float` — 0.0–100.0. Added Sprint N+1 S2.
+
+### agy_self_test
+
+Metadata-only introspection of every registered tool's input schema.
+
+Input: `AgySelfTestRequest`
+- `include: list[str] | None` — filter tools by name prefix; `None` = all tools
+- `only_show_tolerant: bool` — if True, only return tools that accept `args={}`
+
+Output: `AgySelfTestResponse`
+- `total_tools: int`
+- `tolerant_count: int` — number of tools that accept `args={}` (empty required)
+- `requires_req_count: int` — number of tools still requiring the legacy `req` wrapper
+- `tools: list[AgyToolSchemaReport]` — per-tool schema breakdown
+- `server_info: dict[str, Any]` — FastMCP version + registered tool counts
+- `summary: str` — human-readable one-liner
+
+Each `AgyToolSchemaReport` exposes:
+- `name: str` — tool name (e.g. `"agy_run_task"`)
+- `top_level_required: list[str]`
+- `top_level_properties: list[str]`
+- `accepts_empty_args: bool`
+- `requires_req_wrapper: bool`
+
+Cross-reference: parity tool exists in `claude-code-cli-mcp` as `claude_self_test`. The same `requires_req_count` metric drives the dual-call-safety contract on both MCP servers (legacy `args={}` callers must keep working for backwards compatibility).
 
 ### agy_cancel_task
 
@@ -72,6 +133,7 @@ Check Antigravity CLI model quota status.
 
 The Antigravity CLI does NOT expose a direct quota inspection endpoint. This
 tool implements a hybrid strategy combining four sources:
+
 
 - **A) Local counter (always-on)**: Tracks every agy_run_task / agy_start_task
   invocation per active model in a sliding 5-hour window (the documented
@@ -117,6 +179,22 @@ Settings (env vars, all `AGY_MCP_QUOTA_*`):
 - `AGY_MCP_QUOTA_PROBE_TIMEOUT_S` (default `30`)
 - `AGY_MCP_QUOTA_API_BASE_URL` (default `https://generativelanguage.googleapis.com`)
 - `AGY_MCP_QUOTA_API_KEY` (no default; required for `use_api=True`)
+- `AGY_MCP_QUOTA_POLICY_ENABLED` (default `false`) — added Sprint N+1 S3. When
+  `true` and `AGY_MCP_ALLOW_OVERAGE=false`, calls are gated and a structured
+  `QuotaExhaustedError` is raised once the per-window quota is exhausted.
+- `AGY_MCP_ALLOW_OVERAGE` (default `false`) — added Sprint N+1 S3. When
+  `true`, the gate in `agy_run_task` is bypassed (you accept the overage risk
+  of incurring Gemini billing overages after the soft quota is exhausted).
+- `AGY_MCP_QUOTA_LOW_THRESHOLD_PCT` (default `20.0`) — added Sprint N+1 S3.
+  Fraction of the per-window quota below which `quota_warning` is reported as
+  `"low"` (otherwise `"ok"`). At 0.0 remaining the warning flips to
+  `"exhausted"`.
+
+Runtime exception (`QuotaExhaustedError`, added Sprint N+1 S3):
+- Carries `model`, `used`, `limit`, `reset_in_seconds` for client visibility.
+- Raised only when the policy is enabled, overage is disallowed, and the
+  per-window snapshot reports `warning="exhausted"`. Default settings keep
+  the policy off; existing clients see no behaviour change.
 
 ### agy_init_persistence
 
@@ -228,6 +306,8 @@ The server also exposes reusable prompts intended to guide orchestration:
 - `prompt_security_and_workspace_rules`: summarizes security and workspace rules
 - `agy_persistence_protocol`: instructs the orchestrator on how to maintain
   the persistent memory layer (`AGENTS.md`, `PROJECTS.md`, `MEMORY.md`).
+- `agy_quickstart`: cheatsheet — args shape, required CLI binary, common gotchas.
+- `agy_troubleshoot`: turns an exact error string into the canonical fix.
 
 ## Model Selection (Important)
 
