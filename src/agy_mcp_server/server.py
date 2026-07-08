@@ -716,7 +716,13 @@ def agy_run_task(req: AgyRunTaskRequestIn | None = None) -> AgyRunTaskResponse:
         StoredRun(status=status, result=result, changes=changes, started_at=started_at),
     )
 
-    return AgyRunTaskResponse(result=result, changes=changes)
+    _snap = _quota_tracker.snapshot(_settings.quota_active_model)
+    return AgyRunTaskResponse(
+        result=result,
+        changes=changes,
+        quota_warning=_snap.warning,
+        quota_remaining_pct=round(_snap.remaining / max(_snap.limit, 1) * 100, 1),
+    )
 
 
 @mcp.tool(name=tool_name("start_task"))
@@ -801,7 +807,13 @@ def agy_start_task(req: AgyStartTaskRequestIn | None = None) -> AgyStartTaskResp
     t = threading.Thread(target=_finalize_active_run, args=(active,), daemon=True)
     t.start()
 
-    return AgyStartTaskResponse(run_id=run_id, started_at=started_at)
+    _snap = _quota_tracker.snapshot(_settings.quota_active_model)
+    return AgyStartTaskResponse(
+        run_id=run_id,
+        started_at=started_at,
+        quota_warning=_snap.warning,
+        quota_remaining_pct=round(_snap.remaining / max(_snap.limit, 1) * 100, 1),
+    )
 
 
 @mcp.tool(name=tool_name("poll_task"))
@@ -835,6 +847,10 @@ def agy_poll_task(req: AgyPollTaskRequestIn | None = None) -> AgyPollTaskRespons
     with _active_runs_lock:
         active = _active_runs.get(req.run_id)
 
+    _snap = _quota_tracker.snapshot(_settings.quota_active_model)
+    _q_warn = _snap.warning
+    _q_pct = round(_snap.remaining / max(_snap.limit, 1) * 100, 1)
+
     if active is not None:
         max_tail = min(_settings.max_output_bytes, 200_000)
         return AgyPollTaskResponse(
@@ -843,6 +859,8 @@ def agy_poll_task(req: AgyPollTaskRequestIn | None = None) -> AgyPollTaskRespons
             partial_stdout=active.stdout_buf.tail(max_tail),
             partial_stderr=active.stderr_buf.tail(max_tail),
             changes=None,
+            quota_warning=_q_warn,
+            quota_remaining_pct=_q_pct,
         )
 
     stored = _run_store.get(req.run_id)
@@ -855,6 +873,8 @@ def agy_poll_task(req: AgyPollTaskRequestIn | None = None) -> AgyPollTaskRespons
         partial_stdout="",
         partial_stderr="",
         changes=stored.changes,
+        quota_warning=_q_warn,
+        quota_remaining_pct=_q_pct,
     )
 
 

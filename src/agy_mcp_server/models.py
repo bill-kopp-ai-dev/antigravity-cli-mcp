@@ -86,11 +86,15 @@ class WorkspaceChanges(BaseModel):
 class AgyRunTaskResponse(BaseModel):
     result: AgyRunResult
     changes: WorkspaceChanges | None = None
+    quota_warning: Literal["ok", "low", "exhausted"] = "ok"
+    quota_remaining_pct: float = 100.0
 
 
 class AgyStartTaskResponse(BaseModel):
     run_id: str
     started_at: datetime
+    quota_warning: Literal["ok", "low", "exhausted"] = "ok"
+    quota_remaining_pct: float = 100.0
 
 
 class AgyPollTaskResponse(BaseModel):
@@ -99,6 +103,8 @@ class AgyPollTaskResponse(BaseModel):
     partial_stdout: str = ""
     partial_stderr: str = ""
     changes: WorkspaceChanges | None = None
+    quota_warning: Literal["ok", "low", "exhausted"] = "ok"
+    quota_remaining_pct: float = 100.0
 
 
 class AgyCancelTaskResponse(BaseModel):
