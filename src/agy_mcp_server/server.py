@@ -19,6 +19,7 @@ _SRC_ROOT = Path(__file__).resolve().parents[1]
 if str(_SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(_SRC_ROOT))
 
+from agy_mcp_server import __version__
 from agy_mcp_server.changes import (
     diff_snapshots,
     git_changed_files,
@@ -124,6 +125,22 @@ _quota_tracker.tier_limits = dict(_settings.quota_tier_limits)
 
 if _settings.fix_antigravity_mcp_config:
     ensure_valid_mcp_config_json(_settings.antigravity_mcp_config_path)
+
+# Warn at startup when quota enforcement is enabled but the active model
+# is left at its default ("unknown"). That bucket is NOT in
+# MODEL_QUOTA_REGISTRY, so the gate is effectively inert until the
+# orchestrator configures AGY_MCP_QUOTA_ACTIVE_MODEL.
+if (
+    _settings.quota_policy_enabled
+    and _settings.quota_active_model in ("unknown", "", None)
+):
+    logging.getLogger(__name__).warning(
+        "quota_policy_enabled is True but quota_active_model is %r — "
+        "the blocking gate will only fire after the conservative fallback "
+        "limit (100 calls/window) is reached. Set "
+        "AGY_MCP_QUOTA_ACTIVE_MODEL=<model> for accurate enforcement.",
+        _settings.quota_active_model,
+    )
 
 
 def _now() -> datetime:
@@ -378,16 +395,10 @@ def _finalize_active_run(run: ActiveRun) -> None:
     stderr = run.stderr_buf.get()
 
     # Quota tracking: record the call and classify any failure.
+    # Note: the gate (raise QuotaExhaustedError) runs in agy_start_task
+    # BEFORE Popen, not here — exceptions raised from this daemon thread
+    # would be silently swallowed and never reach the caller.
     _quota_tracker.record_call(_settings.quota_active_model)
-    if _settings.quota_policy_enabled and not _settings.allow_overage:
-        _gate_snap = _quota_tracker.snapshot(_settings.quota_active_model)
-        if _gate_snap.warning == "exhausted":
-            raise QuotaExhaustedError(
-                model=_gate_snap.model,
-                used=_gate_snap.used,
-                limit=_gate_snap.limit,
-                reset_in_seconds=_gate_snap.window_remaining_seconds,
-            )
     if exit_code != 0 or timed_out:
         _quota_tracker.record_failure(
             classify_agy_failure(exit_code, stdout, stderr, timed_out)
@@ -818,6 +829,19 @@ def agy_run_task(req: AgyRunTaskRequestIn | None = None) -> AgyRunTaskResponse:
         )
 
     started_at = _now()
+
+    # Quota gate: must run BEFORE subprocess to avoid burning a real quota
+    # slot when the policy says we should block.
+    if _settings.quota_policy_enabled and not _settings.allow_overage:
+        _gate_snap = _quota_tracker.snapshot(_settings.quota_active_model)
+        if _gate_snap.warning == "exhausted":
+            raise QuotaExhaustedError(
+                model=_gate_snap.model,
+                used=_gate_snap.used,
+                limit=_gate_snap.limit,
+                reset_in_seconds=_gate_snap.window_remaining_seconds,
+            )
+
     stdout, stderr, exit_code, timed_out = _run_agy(
         workspace,
         req.model_copy(update={"prompt": prompt_text}),
@@ -830,16 +854,6 @@ def agy_run_task(req: AgyRunTaskRequestIn | None = None) -> AgyRunTaskResponse:
         _quota_tracker.record_failure(
             classify_agy_failure(exit_code, stdout, stderr, timed_out)
         )
-
-    if _settings.quota_policy_enabled and not _settings.allow_overage:
-        _snap = _quota_tracker.snapshot(_settings.quota_active_model)
-        if _snap.warning == "exhausted":
-            raise QuotaExhaustedError(
-                model=_snap.model,
-                used=_snap.used,
-                limit=_snap.limit,
-                reset_in_seconds=_snap.window_remaining_seconds,
-            )
 
     stdout = stdout[: _settings.max_output_bytes]
     stderr = stderr[: _settings.max_output_bytes]
@@ -980,6 +994,19 @@ def agy_start_task(req: AgyStartTaskRequestIn | None = None) -> AgyStartTaskResp
 
     started_at = _now()
     run_id = f"run-{uuid4()}"
+
+    # Quota gate: must run BEFORE Popen so we don't spawn the subprocess
+    # when the policy says we should block. The finalize thread does NOT
+    # re-raise (it runs in a daemon and exceptions are silently swallowed).
+    if _settings.quota_policy_enabled and not _settings.allow_overage:
+        _gate_snap = _quota_tracker.snapshot(_settings.quota_active_model)
+        if _gate_snap.warning == "exhausted":
+            raise QuotaExhaustedError(
+                model=_gate_snap.model,
+                used=_gate_snap.used,
+                limit=_gate_snap.limit,
+                reset_in_seconds=_gate_snap.window_remaining_seconds,
+            )
 
     req_for_agy = req.model_copy(update={"prompt": prompt_text})
     proc, _, input_text = _build_agy_popen(workspace, req_for_agy)
@@ -1425,8 +1452,10 @@ def agy_clear_cache(req: AgyClearCacheRequestIn | None = None) -> AgyClearCacheR
 
         args = [str(uv_exe), "cache", "clean"]
         if req.full:
-            args.append("--dry-run")
-            notes.append("full=True: would clear entire cache (dry-run).")
+            notes.append(
+                "full=True: clearing entire uv cache. Subsequent uvx "
+                "invocations will re-download and re-install dependencies."
+            )
         else:
             notes.append(
                 "full=False (default): clears uv cache entries for this package."
@@ -2073,7 +2102,7 @@ def agy_self_test(req: AgySelfTestRequestIn | None = None) -> AgySelfTestRespons
         tolerant_count=tolerant,
         requires_req_count=requires_req,
         tools=reports,
-        server_info={"name": "agy-mcp-server", "version": "3.4.2"},
+        server_info={"name": "agy-mcp-server", "version": __version__},
         summary=f"{len(reports)} tools inspected: {tolerant} tolerant to args={{}}, {requires_req} still require `req` wrapper",
     )
 

@@ -105,3 +105,123 @@ class TestQuotaEnforcement:
         # Default: quota_policy_enabled=False → condition short-circuits to False.
         gate_open = not (s.quota_policy_enabled and not s.allow_overage and snap.warning == "exhausted")
         assert gate_open is True
+
+
+class TestGatePrecedesSubprocess:
+    """Regression tests for the sprint-N+1 review fix.
+
+    The original implementation ran the quota gate AFTER
+    `_run_agy(...)`, which meant a "blocking" policy still consumed one
+    real agy quota slot before raising. Fix: gate must run BEFORE any
+    subprocess spawn (or Popen for the async path).
+    """
+
+    def test_run_task_gate_runs_before_run_agy(self, monkeypatch, tmp_path):
+        """agy_run_task must raise QuotaExhaustedError before calling _run_agy."""
+        import importlib
+        from agy_mcp_server import server as server_mod
+
+        # Reload server with policy enabled and overage disabled.
+        monkeypatch.setenv("AGY_MCP_MODE", "safe")
+        monkeypatch.setenv("AGY_MCP_ALLOWED_ROOTS", f'["{tmp_path}"]')
+        monkeypatch.setenv("AGY_MCP_PERSISTENCE_ENABLED", "false")
+        monkeypatch.setenv("AGY_MCP_QUOTA_POLICY_ENABLED", "true")
+        monkeypatch.setenv("AGY_MCP_ALLOW_OVERAGE", "false")
+        monkeypatch.setenv("AGY_MCP_QUOTA_ACTIVE_MODEL", "gemini-2.5-pro")
+        importlib.reload(server_mod)
+
+        from agy_mcp_server.models import AgyExecOptions, AgyRunTaskRequest
+        from agy_mcp_server.server import QuotaExhaustedError
+
+        # Saturate the active model bucket.
+        tracker = server_mod._quota_tracker
+        for _ in range(1000):
+            tracker.record_call("gemini-2.5-pro")
+
+        # If _run_agy is called, the test fails. Use a stub that raises.
+        def boom(*args, **kwargs):
+            raise AssertionError("_run_agy called despite exhausted quota")
+
+        monkeypatch.setattr(server_mod, "_run_agy", boom)
+
+        req = AgyRunTaskRequest(
+            workspace_path=str(tmp_path),
+            prompt="OK",
+            options=AgyExecOptions(timeout_s=10),
+            capture_changes=False,
+        )
+        with pytest.raises(QuotaExhaustedError) as exc_info:
+            server_mod.agy_run_task(req=req)
+        assert exc_info.value.model == "gemini-2.5-pro"
+        assert exc_info.value.used == 1000
+        assert exc_info.value.limit == 1000
+
+    def test_start_task_gate_runs_before_popen(self, monkeypatch, tmp_path):
+        """agy_start_task must raise QuotaExhaustedError before calling Popen."""
+        import importlib
+        from agy_mcp_server import server as server_mod
+
+        monkeypatch.setenv("AGY_MCP_MODE", "safe")
+        monkeypatch.setenv("AGY_MCP_ALLOWED_ROOTS", f'["{tmp_path}"]')
+        monkeypatch.setenv("AGY_MCP_PERSISTENCE_ENABLED", "false")
+        monkeypatch.setenv("AGY_MCP_QUOTA_POLICY_ENABLED", "true")
+        monkeypatch.setenv("AGY_MCP_ALLOW_OVERAGE", "false")
+        monkeypatch.setenv("AGY_MCP_QUOTA_ACTIVE_MODEL", "gemini-2.5-pro")
+        importlib.reload(server_mod)
+
+        from agy_mcp_server.models import AgyExecOptions, AgyStartTaskRequest
+        from agy_mcp_server.server import QuotaExhaustedError
+
+        tracker = server_mod._quota_tracker
+        for _ in range(1000):
+            tracker.record_call("gemini-2.5-pro")
+
+        # Stub _build_agy_popen to raise — proves it's never reached.
+        def boom(*args, **kwargs):
+            raise AssertionError("_build_agy_popen called despite exhausted quota")
+
+        monkeypatch.setattr(server_mod, "_build_agy_popen", boom)
+
+        req = AgyStartTaskRequest(
+            workspace_path=str(tmp_path),
+            prompt="OK",
+            options=AgyExecOptions(timeout_s=10),
+            capture_changes=False,
+        )
+        with pytest.raises(QuotaExhaustedError):
+            server_mod.agy_start_task(req=req)
+
+    def test_run_task_allow_overage_bypasses_gate(self, monkeypatch, tmp_path):
+        """When allow_overage=True, exhausted quota does NOT block."""
+        import importlib
+        from agy_mcp_server import server as server_mod
+
+        monkeypatch.setenv("AGY_MCP_MODE", "safe")
+        monkeypatch.setenv("AGY_MCP_ALLOWED_ROOTS", f'["{tmp_path}"]')
+        monkeypatch.setenv("AGY_MCP_PERSISTENCE_ENABLED", "false")
+        monkeypatch.setenv("AGY_MCP_QUOTA_POLICY_ENABLED", "true")
+        monkeypatch.setenv("AGY_MCP_ALLOW_OVERAGE", "true")
+        monkeypatch.setenv("AGY_MCP_QUOTA_ACTIVE_MODEL", "gemini-2.5-pro")
+        importlib.reload(server_mod)
+
+        from agy_mcp_server.models import AgyExecOptions, AgyRunTaskRequest
+
+        tracker = server_mod._quota_tracker
+        for _ in range(1000):
+            tracker.record_call("gemini-2.5-pro")
+
+        # Stub _run_agy — overage should let us through.
+        def fake_run(workspace, req):
+            return ("", "", 0, False)
+
+        monkeypatch.setattr(server_mod, "_run_agy", fake_run)
+
+        req = AgyRunTaskRequest(
+            workspace_path=str(tmp_path),
+            prompt="OK",
+            options=AgyExecOptions(timeout_s=10),
+            capture_changes=False,
+        )
+        # Must not raise.
+        resp = server_mod.agy_run_task(req=req)
+        assert resp.result.exit_code == 0
