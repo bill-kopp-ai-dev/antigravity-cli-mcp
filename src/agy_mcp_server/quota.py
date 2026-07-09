@@ -139,6 +139,7 @@ class QuotaStatus:
     healthy: bool
     source: str
     notes: list[str] = field(default_factory=list)
+    window_resets_in_seconds: float | None = None
 
 
 @dataclass(frozen=True)
@@ -217,12 +218,15 @@ class QuotaTracker:
             limit = self.tier_limits.get(tier, 999_999)
             remaining = max(0, limit - used)
             reset_at: datetime | None = None
+            window_resets_in_seconds: float | None = None
             if recent:
                 window_start = min(recent)
                 reset_at = datetime.fromtimestamp(
                     window_start + self.period_hours * 3600.0,
                     tz=timezone.utc,
                 )
+                now_dt = datetime.fromtimestamp(now, tz=timezone.utc)
+                window_resets_in_seconds = max(0.0, (reset_at - now_dt).total_seconds())
             notes: list[str] = []
             if self.last_failure_kind is not None:
                 notes.append(
@@ -242,6 +246,7 @@ class QuotaTracker:
                 healthy=used < limit,
                 source="local_counter",
                 notes=notes,
+                window_resets_in_seconds=window_resets_in_seconds,
             )
 
     def snapshot(self, model: str, *, low_threshold_pct: float = 20.0) -> QuotaSnapshot:

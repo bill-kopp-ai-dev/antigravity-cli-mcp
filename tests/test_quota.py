@@ -186,6 +186,17 @@ class TestQuotaTracker:
     def test_default_period_hours(self):
         assert DEFAULT_PERIOD_HOURS == 5.0
 
+    def test_window_resets_in_seconds_computed_correctly(self):
+        t = QuotaTracker(period_hours=1.0)
+        s = t.status("model-a", tier="pro")
+        assert s.window_resets_in_seconds is None
+
+        base = time.time()
+        t.record_call("model-a", ts=base)
+        s = t.status("model-a", tier="pro")
+        assert s.window_resets_in_seconds is not None
+        assert 0 <= s.window_resets_in_seconds <= 3600.0
+
 
 class TestQuotaTrackerConcurrency:
     def test_thread_safety(self):
@@ -340,3 +351,26 @@ class TestServerQuotaHookIntegration:
         resp = AgyQuotaResponse(statuses=[], overall_healthy=True)
         assert resp.statuses == []
         assert resp.overall_healthy is True
+
+    def test_agy_quota_tool_window_resets_in_seconds(self):
+        from agy_mcp_server.server import agy_quota, _quota_tracker
+        from agy_mcp_server.models import AgyQuotaRequest
+
+        # Clear the tracker's calls to ensure clean state
+        with _quota_tracker._lock:
+            _quota_tracker._calls.clear()
+
+        # Call with no calls recorded
+        req = AgyQuotaRequest(model="gemini-3-flash", tier="pro")
+        resp = agy_quota(req)
+        assert len(resp.statuses) == 1
+        status = resp.statuses[0]
+        assert status.window_resets_in_seconds is None
+
+        # Call with a call recorded
+        _quota_tracker.record_call("gemini-3-flash")
+        resp = agy_quota(req)
+        assert len(resp.statuses) == 1
+        status = resp.statuses[0]
+        assert status.window_resets_in_seconds is not None
+        assert status.window_resets_in_seconds >= 0.0

@@ -170,6 +170,7 @@ Per-model `AgyQuotaStatus` fields:
 - `healthy: bool`
 - `source: "local_counter" | "api_call" | "probe" | "error_parser" | "combined"`
 - `notes: list[str]`
+- `window_resets_in_seconds: float | None` (None when `reset_at` is unknown; otherwise seconds until reset, ≥ 0)
 
 Settings (env vars, all `AGY_MCP_QUOTA_*`):
 - `AGY_MCP_QUOTA_ACTIVE_MODEL` (default `"unknown"`)

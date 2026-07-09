@@ -1005,6 +1005,7 @@ def _internal_to_response_status(s: InternalQuotaStatus) -> AgyQuotaStatus:
         healthy=s.healthy,
         source=s.source,  # type: ignore[arg-type]
         notes=list(s.notes),
+        window_resets_in_seconds=s.window_resets_in_seconds,
     )
 
 

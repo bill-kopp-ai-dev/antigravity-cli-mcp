@@ -167,6 +167,7 @@ class AgyQuotaStatus(BaseModel):
     healthy: bool
     source: QuotaSource
     notes: list[str] = Field(default_factory=list)
+    window_resets_in_seconds: float | None = None
 
 
 class AgyQuotaResponse(BaseModel):

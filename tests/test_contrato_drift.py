@@ -134,3 +134,8 @@ class TestContratoDrift:
             assert required_field in body, f"agy_run_task input missing {required_field}"
         for required_field in ("result", "changes"):
             assert required_field in body, f"agy_run_task output missing {required_field}"
+
+    def test_quota_status_has_window_resets_in_seconds(self) -> None:
+        from agy_mcp_server.models import AgyQuotaStatus
+        fields = set(AgyQuotaStatus.model_fields.keys())
+        assert "window_resets_in_seconds" in fields
