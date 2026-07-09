@@ -4,6 +4,58 @@ All notable changes to this project will be documented in this file.
 
 ## 0.2.0 (2026-07-08)
 
+### Added (Sprint N+2 — prompt primitives & docstrings)
+
+- Sprint N+2 F1+F5+F6 — every `@mcp.tool` (14 tools) and every orchestrator
+  `@mcp.prompt` (4 prompts) in `src/agy_mcp_server/server.py` now carries a
+  full `Input / Returns / Raises / Side effects / Example` docstring in
+  place of the previous one-line `Args shape:` trailers. The `agy_quota`
+  tool keeps its A/B/C/D hybrid strategy section as a special case.
+- Sprint N+2 F6-r — the four `@mcp.prompt(name=prompt_name(...))`
+  decorators (`agy_persistence_protocol`, `agy_quickstart`, `agy_contract`,
+  `agy_troubleshoot`) now follow the same four-section shape.
+- Sprint N+2 F3 — `CONTRATO_TOOLS.md` §Prompts restructured into four
+  sub-sections (Sync orchestration / Async orchestration / Selection &
+  safety / Cheatsheets), each documenting signature, input fields, output
+  shape, and a 'use when' anchor that mirrors the in-source docstrings.
+- Sprint N+2 F4 — new `tests/test_prompt_drift_guard.py` (6 tests)
+  enforces: documented-vs-registered parity, four-section docstring shape
+  on every `@mcp.prompt` (Input / Returns / Side effects / Use when), and
+  the §Prompts sub-section structure. Mirrors the existing
+  `test_contrato_drift.py` guard for tools.
+- Sprint N+2 F10 — `QuotaExhaustedError` moved from the bottom of
+  `server.py` (line 1994) to line 155 (immediately after `_agy_path()`),
+  so it is resolvable by docstrings `Raises:` references in tool
+  decorators that precede it. Docstring expanded with attributes, three
+  resolution paths, and architectural rationale.
+
+### Changed (Sprint N+2)
+
+- Project version bumped from `0.1.0` → `0.2.0` (public contract surface
+  for users changed: the new prompt registry and structured docstrings
+  are now part of the docs/api surface).
+- Test count grew from **241 → 252** (+11 from N+2 + 0 dropped).
+- Ruff baseline preserved.
+
+### Notes (Sprint N+2)
+
+- Pure docs + test additions — no runtime behavior change in any
+  `agy_*` tool.
+- All 4 commits landed atomically on branch
+  `feat/sprint-N+2-prompts` (base: 2171363 = `feat/sprint-N+1-quota`).
+  See "Sprint N+2 commits" below.
+
+### Sprint N+2 commits
+
+| Hash | Commit | Files | +/- |
+|---|---|---|---|
+| `504be3c` | `docs(server): enrich 14 tool docstrings + 4 prompt docstrings` | `src/agy_mcp_server/server.py` | +467 / −188 |
+| `3cb3cee` | `docs(contrato): add per-prompt contract sections` | `CONTRATO_TOOLS.md` | +44 / −10 |
+| `cb9b333` | `docs(server): enrich remaining 4 prompt docstrings` | `src/agy_mcp_server/server.py` | +61 / −10 |
+| `feac6e9` | `test(contrato): prompt drift guard coverage` | `tests/test_prompt_drift_guard.py` | +121 |
+
+## 0.1.1 (2026-07-08)
+
 ### Added
 
 - `AGY_MCP_QUOTA_POLICY_ENABLED` setting (default `false`). When enabled with `AGY_MCP_ALLOW_OVERAGE=false`, calls are blocked with a structured `QuotaExhaustedError` once the per-window quota is exhausted.

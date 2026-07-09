@@ -69,15 +69,29 @@ A local STDIO MCP server that exposes tools and reusable prompts for running the
 - `agy_update_persistence`: replaces a section by heading anchor
 - `agy_load_persistence_context`: loads truncated excerpts as session context
 
-**Prompts (7 total)**
-- `prompt_sync_orchestration`: guidance for `agy_run_task`
-- `prompt_async_orchestration`: guidance for `agy_start_task` → `agy_poll_task` → `agy_cancel_task`
-- `prompt_model_selection_guidance`: explains how model selection works and its limitations
-- `prompt_security_and_workspace_rules`: summarizes workspace and safety rules for orchestrators
-- `agy_persistence_protocol`: instructs the orchestrator on how to maintain
-  the persistent memory layer
-- `agy_quickstart`: cheatsheet — args shape, required CLI binary, common gotchas
-- `agy_troubleshoot`: turns an exact error string into the canonical fix
+**Prompts (8 total, fully documented — Sprint N+2)**
+- `prompt_sync_orchestration(workspace_path, goal)`: playbook for
+  `agy_run_task` — Input/Returns/Side effects/Use when shape.
+- `prompt_async_orchestration(workspace_path, goal)`: playbook for
+  `agy_start_task` + `agy_poll_task` + `agy_cancel_task`, including
+  backoff polling and force escalation.
+- `prompt_model_selection_guidance()` (zero-arg): explains the
+  model-selection limitation and the 4-step `/model` CLI procedure.
+- `prompt_security_and_workspace_rules()` (zero-arg): reminds the
+  orchestrator of `workspace_path`, `AGY_MCP_ALLOWED_ROOTS`, safe-mode,
+  permissive-mode allowlists, and safe defaults.
+- `agy_persistence_protocol` (registered as `agy_persistence_protocol`):
+  instructs the orchestrator on how to maintain the persistent memory
+  layer.
+- `agy_quickstart` (registered as `agy_quickstart`): cheatsheet — args
+  shape, required CLI binary, common gotchas. Read this first if
+  confused.
+- `agy_contract` (registered as `agy_contract`): full machine-readable
+  JSON contract of every registered tool. Built from
+  `mcp._local_provider._components`.
+- `agy_troubleshoot` (registered as `agy_troubleshoot`): diagnose a
+  specific error string and return the canonical fix. Pass the exact
+  error message.
 
 **Helpers (not yet wired into tools)**
 - `agy_mcp_server.timeout_policy.compute_quota_safe_timeout`: returns
@@ -90,7 +104,10 @@ A local STDIO MCP server that exposes tools and reusable prompts for running the
 
 **Contract drift guard**
 - `tests/test_contrato_drift.py` (13 tests) — keeps CONTRATO_TOOLS.md and
-  the FastMCP registry in sync.
+  the FastMCP registry in sync (tools).
+- `tests/test_prompt_drift_guard.py` (6 tests, Sprint N+2) — keeps the
+  §Prompts sub-sections and the `@mcp.prompt` docstring shape (Input /
+  Returns / Side effects / Use when) in sync with the server.
 - `tests/test_secret_drift_guard.py` (3 tests) — AST walks `settings.py`
   for `*_SECRET_ID` fields and asserts they have regression coverage.
 
@@ -287,12 +304,15 @@ uv sync --extra dev
 uv run pytest
 ```
 
-The suite currently has **241 tests** spanning:
+The suite currently has **252 tests** spanning:
 
 - `tests/test_self_test.py` (2) — registry metadata shape
 - `tests/test_contrato_drift.py` (13) — keeps `CONTRATO_TOOLS.md` and the
   FastMCP tool registry in sync; also asserts `window_resets_in_seconds`
   is exposed on `AgyQuotaStatus`
+- `tests/test_prompt_drift_guard.py` (6, **Sprint N+2**) — keeps the
+  CONTRATO §Prompts sub-sections and the `@mcp.prompt` docstring shape
+  (Input / Returns / Side effects / Use when) in sync with the server
 - `tests/test_secret_drift_guard.py` (3) — AST walks `settings.py` for
   any tracked `*_SECRET_ID` fields without regression tests
 - `tests/test_timeout_policy.py` (54) — exercises the
@@ -393,6 +413,16 @@ Permissive mode still enforces explicit allowlists:
 - `AGY_MCP_ALLOW_EXTRA_ARGS`
 
 See [CONTRATO_TOOLS.md](CONTRATO_TOOLS.md) for the tool contract and available prompts.
+
+## Project Status
+
+| Sprint | Scope | Outcome |
+|--------|-------|---------|
+| N | baseline scaffold | public surface + tests |
+| N+1 | quota-aware `agy` (S4 + S5) | `AGY_MCP_QUOTA_POLICY_ENABLED`, `QuotaExhaustedError`, `tests/test_quota_enforcement.py` |
+| **N+2** | **prompt primitives & docstrings** | 14 tool docstrings enriched, 8 prompt docstrings, `tests/test_prompt_drift_guard.py`, `CONTRATO_TOOLS.md` §Prompts restructured |
+
+Current version: **0.2.0** (see [CHANGELOG.md](CHANGELOG.md)). Test count: **252 passed** (in ~9.5s on Python 3.11).
 
 ## Troubleshooting
 
