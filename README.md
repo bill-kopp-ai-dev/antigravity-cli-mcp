@@ -1,6 +1,13 @@
 # agy-mcp-server
 
-Version: 0.0.1
+[![Version](https://img.shields.io/badge/version-0.1.0-blue.svg)](https://github.com/bill-kopp-ai-dev/antigravity-cli-mcp/blob/main/CHANGELOG.md)
+[![FastMCP](https://img.shields.io/badge/FastMCP-3.4.3-green.svg)](https://github.com/PrefectHQ/fastmcp)
+[![Python](https://img.shields.io/badge/python-≥3.11-blue.svg)](https://docs.python.org/3/)
+[![Tests](https://img.shields.io/badge/tests-241%20passed-brightgreen.svg)](tests/)
+[![Ruff](https://img.shields.io/badge/ruff-baseline%2017-yellow.svg)](#troubleshooting)
+[![License](https://img.shields.io/badge/license-MIT-lightgrey.svg)](#)
+
+Version: 0.1.0
 
 A local STDIO MCP server that exposes tools and reusable prompts for running the Google Antigravity CLI (`agy`) inside a controlled workspace.
 
@@ -14,6 +21,8 @@ A local STDIO MCP server that exposes tools and reusable prompts for running the
 - Pydantic: https://github.com/pydantic/pydantic
 - Pydantic Settings: https://github.com/pydantic/pydantic-settings
 - Antigravity CLI (agy): https://github.com/google-antigravity/antigravity-cli
+- [CHANGELOG](CHANGELOG.md) — version history
+- [CONTRATO_TOOLS](CONTRATO_TOOLS.md) — public tool/prompt contract
 
 ## Why This Project Exists
 
@@ -38,16 +47,21 @@ A local STDIO MCP server that exposes tools and reusable prompts for running the
 
 ## Features
 
-**Tools**
+**Tools (14 total, all documented in [CONTRATO_TOOLS](CONTRATO_TOOLS.md))**
 - `agy_health`: checks that `agy` is installed and returns its version
-- `agy_run_task`: runs a synchronous (blocking) task
-- `agy_start_task`: starts an asynchronous task
-- `agy_poll_task`: polls an asynchronous task
+- `agy_run_task`: runs a synchronous (blocking) task. Returns
+  `quota_warning` + `quota_remaining_pct` so callers can plan ahead.
+- `agy_start_task`: starts an asynchronous task. Same quota fields.
+- `agy_poll_task`: polls an asynchronous task. Same quota fields.
 - `agy_cancel_task`: cancels a running task
 - `agy_list_runs`: lists recent runs
 - `agy_quota`: hybrid quota inspection (local counter, failure classifier,
-  opt-in probe, opt-in external API)
+  opt-in probe, opt-in external API). New: per-model
+  `window_resets_in_seconds` and `QuotaExhaustedError` raised when
+  `AGY_MCP_QUOTA_POLICY_ENABLED=true` and `AGY_MCP_ALLOW_OVERAGE=false`.
 - `agy_clear_cache`: clears the `uv` cache to recover from stale-package errors
+- `agy_self_test`: metadata-only introspection of every registered tool's
+  input schema (parity with `claude-code-cli-mcp::claude_self_test`)
 - `agy_init_persistence`: creates `~/.open-cli-router/agy/` with editable
   `AGENTS.md`, `PROJECTS.md`, `MEMORY.md`
 - `agy_read_persistence`: reads one of the three persistence files
@@ -55,13 +69,30 @@ A local STDIO MCP server that exposes tools and reusable prompts for running the
 - `agy_update_persistence`: replaces a section by heading anchor
 - `agy_load_persistence_context`: loads truncated excerpts as session context
 
-**Prompts**
+**Prompts (7 total)**
 - `prompt_sync_orchestration`: guidance for `agy_run_task`
 - `prompt_async_orchestration`: guidance for `agy_start_task` → `agy_poll_task` → `agy_cancel_task`
 - `prompt_model_selection_guidance`: explains how model selection works and its limitations
 - `prompt_security_and_workspace_rules`: summarizes workspace and safety rules for orchestrators
 - `agy_persistence_protocol`: instructs the orchestrator on how to maintain
   the persistent memory layer
+- `agy_quickstart`: cheatsheet — args shape, required CLI binary, common gotchas
+- `agy_troubleshoot`: turns an exact error string into the canonical fix
+
+**Helpers (not yet wired into tools)**
+- `agy_mcp_server.timeout_policy.compute_quota_safe_timeout`: returns
+  `(timeout_s, must_use_async, warning, quota_warning)` based on
+  TaskClass × QuotaProfileTier × recent failure rate. See
+  `tests/test_timeout_policy.py` for the full contract (54 tests).
+
+**Smoke**
+- `python tools/agy_smoke.py` → `AGY_SMOKE_OK total=14 tolerant=14` and exit 0.
+
+**Contract drift guard**
+- `tests/test_contrato_drift.py` (13 tests) — keeps CONTRATO_TOOLS.md and
+  the FastMCP registry in sync.
+- `tests/test_secret_drift_guard.py` (3 tests) — AST walks `settings.py`
+  for `*_SECRET_ID` fields and asserts they have regression coverage.
 
 ## Companion Agent: Femtobot
 
@@ -254,6 +285,30 @@ To install dev dependencies and execute the test suite:
 ```bash
 uv sync --extra dev
 uv run pytest
+```
+
+The suite currently has **241 tests** spanning:
+
+- `tests/test_self_test.py` (2) — registry metadata shape
+- `tests/test_contrato_drift.py` (13) — keeps `CONTRATO_TOOLS.md` and the
+  FastMCP tool registry in sync; also asserts `window_resets_in_seconds`
+  is exposed on `AgyQuotaStatus`
+- `tests/test_secret_drift_guard.py` (3) — AST walks `settings.py` for
+  any tracked `*_SECRET_ID` fields without regression tests
+- `tests/test_timeout_policy.py` (54) — exercises the
+  `compute_quota_safe_timeout` helper across 10 TaskClasses × 4 tiers
+- `tests/test_quota*.py` (~24) — local counter, response shape, policy
+  enforcement, drift guard
+- `tests/test_persistence*.py` (~30) — three-file persistence layer
+- `tests/test_security.py` + `tests/test_provider.py` (~115) — security
+  gates (safe mode, permissive mode, env validation, allowed roots)
+- `tests/test_integration_contract.py` — end-to-end Pydantic models
+
+To run a smoke test of the runtime:
+
+```bash
+uv run python tools/agy_smoke.py
+# Expected: AGY_SMOKE_OK total=14 tolerant=14
 ```
 
 ## Using This Server in Trae

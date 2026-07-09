@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import time
-from datetime import datetime, timedelta, timezone
-
-import pytest
+from datetime import datetime, timezone
 
 from agy_mcp_server.models import DEFAULT_ACTIVE_MODEL, MODEL_QUOTA_REGISTRY
 from agy_mcp_server.quota import (
@@ -339,7 +337,6 @@ class TestServerQuotaHookIntegration:
         from agy_mcp_server.models import (
             AgyQuotaRequest,
             AgyQuotaResponse,
-            AgyQuotaStatus,
         )
 
         req = AgyQuotaRequest()

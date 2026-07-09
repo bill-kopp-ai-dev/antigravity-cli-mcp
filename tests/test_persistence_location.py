@@ -140,7 +140,6 @@ def test_workspace_unwritable_fails_loudly(monkeypatch, tmp_path, restore_cwd):
     equivalente: ``base_dir`` é um path dentro de um diretório read-only.
     """
     import stat
-    import tempfile
 
     # Cria um diretório read-only e tenta criar .open-cli-router dentro dele
     ro_dir = tmp_path / "read_only"
