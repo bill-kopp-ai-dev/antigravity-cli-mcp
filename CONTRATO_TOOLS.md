@@ -299,16 +299,50 @@ Persistence settings (env vars, all `AGY_MCP_PERSISTENCE_*`):
 
 ## Prompts
 
-The server also exposes reusable prompts intended to guide orchestration:
+The server exposes reusable prompts intended to guide orchestration. All
+prompts return pure markdown text -- no MCP tool is called as a side
+effect. The two-name convention below reflects the @mcp.prompt decorator
+alias used in the source.
 
-- `prompt_sync_orchestration`: guidance for `agy_run_task`
-- `prompt_async_orchestration`: guidance for `agy_start_task` → `agy_poll_task` → `agy_cancel_task`
-- `prompt_model_selection_guidance`: explains model selection and its limitations
-- `prompt_security_and_workspace_rules`: summarizes security and workspace rules
-- `agy_persistence_protocol`: instructs the orchestrator on how to maintain
-  the persistent memory layer (`AGENTS.md`, `PROJECTS.md`, `MEMORY.md`).
-- `agy_quickstart`: cheatsheet — args shape, required CLI binary, common gotchas.
-- `agy_troubleshoot`: turns an exact error string into the canonical fix.
+### Sync orchestration
+
+- `prompt_sync_orchestration(workspace_path, goal)` -- playbook for a
+  single `agy_run_task`. Input: workspace_path (JSON example value)
+  and goal (inlined as a single bullet). Output: markdown with goal,
+  workspace echo, constraints (model-selection, workspace, safe defaults),
+  a 4-step execution plan, and a JSON example.
+
+### Async orchestration
+
+- `prompt_async_orchestration(workspace_path, goal)` -- playbook for
+  `agy_start_task` + `agy_poll_task` + `agy_cancel_task`. Input:
+  workspace_path (JSON example value) and goal. Output: markdown with
+  goal, constraints (model-selection, run lifecycle), a 5-step execution
+  plan covering backoff polling and force escalation, plus JSON
+  examples.
+
+### Selection & safety
+
+- `prompt_model_selection_guidance()` (zero-arg) -- explains why this
+  MCP server does NOT control model selection and the 4-step `/model`
+  CLI procedure.
+- `prompt_security_and_workspace_rules()` (zero-arg) -- reminds the
+  orchestrator of workspace_path constraints, AGY_MCP_ALLOWED_ROOTS
+  gate, safe-mode restrictions, permissive-mode allowlists, and
+  recommended safe defaults.
+
+### Cheatsheets
+
+- `agy_contract` -- full machine-readable JSON contract of every
+  registered tool. Builds the catalog from mcp._local_provider._components
+  so it stays in sync with the actual registered tool schemas.
+- `agy_persistence_protocol` -- instructs the orchestrator on how to
+  maintain the persistent memory layer (`AGENTS.md`, `PROJECTS.md`,
+  `MEMORY.md`).
+- `agy_quickstart` -- cheatsheet -- args shape, required CLI binary,
+  common gotchas. Read this first if confused.
+- `agy_troubleshoot` -- diagnose a specific error string and return the
+  fix recipe. Pass the exact error message you received.
 
 ## Model Selection (Important)
 
