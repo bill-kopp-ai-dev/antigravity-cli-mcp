@@ -152,6 +152,42 @@ def _agy_path() -> str:
     return resolved
 
 
+class QuotaExhaustedError(Exception):
+    """Raised when an `agy` call would exceed the per-window quota and the
+    active quota policy is enabled with overage disabled.
+
+    Attributes:
+        model (str): the model whose quota was exhausted.
+        used (int): calls consumed in the current sliding window.
+        limit (int): call cap for the active window.
+        reset_in_seconds (int): seconds until the window resets and
+            quota becomes available again.
+
+    Resolution paths:
+        1. Set AGY_MCP_ALLOW_OVERAGE=true (bypass) -- opt-in policy.
+        2. Wait for the sliding-window reset.
+        3. Switch model via `agy -i` then `/model` (if a different
+           model has independent quota).
+
+    Note:
+        Defined at module top (post-_agy_path) so it is resolvable by
+        docstrings (typing the exception in `Raises:` blocks) and by
+        external callers that `from agy_mcp_server.server import
+        QuotaExhaustedError` regardless of where in the file they import.
+    """
+
+    def __init__(self, *, model: str, used: int, limit: int, reset_in_seconds: int) -> None:
+        self.model = model
+        self.used = used
+        self.limit = limit
+        self.reset_in_seconds = reset_in_seconds
+        super().__init__(
+            f"QUOTA_EXHAUSTED: model={model!r} used={used}/{limit} "
+            f"(resets in {reset_in_seconds}s). "
+            f"Set AGY_MCP_ALLOW_OVERAGE=true to bypass, or wait for window reset."
+        )
+
+
 def _validate_exec_options(req: AgyRunTaskRequest) -> None:
     if req.options.extra_args is not None:
         for arg in req.options.extra_args:
@@ -404,11 +440,29 @@ def _finalize_active_run(run: ActiveRun) -> None:
 
 @mcp.prompt
 def prompt_sync_orchestration(*, workspace_path: str, goal: str) -> str:
-    """
-    Orchestration playbook for running a single synchronous `agy_run_task` safely.
+    """Orchestration playbook for running a single synchronous `agy_run_task` safely.
 
-    Use this prompt when you (the orchestrator agent) need a reliable, repeatable sequence
-    to run one Antigravity CLI task and optionally capture workspace changes.
+    Input:
+        - workspace_path (str, required): absolute path to an existing dir
+          inside AGY_MCP_ALLOWED_ROOTS. Used as the JSON example value.
+        - goal (str, required): the high-level outcome you want the agent
+          to produce. Inlined as a single bullet under "Goal:".
+
+    Returns:
+        A markdown playbook with: goal statement, workspace echo, constraints
+        (model-selection, workspace, safe defaults), 4-step execution plan,
+        and a JSON example for agy_run_task.
+
+    Side effects:
+        None. The prompt is pure text generation; no MCP tool is called.
+
+    Use when:
+        You (the orchestrator agent) need a reliable, repeatable sequence to
+        run one Antigravity CLI task and optionally capture workspace changes.
+
+    Example:
+        prompt_agy_sync_orchestration(workspace_path="/srv/proj",
+                                      goal="Add docstrings to all public functions")
     """
     return (
         "You are orchestrating an MCP server that executes Antigravity CLI (`agy`) inside a controlled workspace.\n"
@@ -457,11 +511,30 @@ def prompt_sync_orchestration(*, workspace_path: str, goal: str) -> str:
 
 @mcp.prompt
 def prompt_async_orchestration(*, workspace_path: str, goal: str) -> str:
-    """
-    Orchestration playbook for running `agy_start_task` + `agy_poll_task` + `agy_cancel_task`.
+    """Orchestration playbook for start_task + poll_task + cancel_task.
 
-    Use this prompt when you need non-blocking execution, progress polling, and a safe
-    cancellation strategy.
+    Input:
+        - workspace_path (str, required): absolute path inside
+          AGY_MCP_ALLOWED_ROOTS. Used as the JSON example value.
+        - goal (str, required): the high-level outcome you want. Inlined
+          as a single bullet under "Goal:".
+
+    Returns:
+        A markdown playbook with: goal statement, workspace echo, constraints
+        (model-selection, run lifecycle), 5-step execution plan covering
+        backoff polling and force escalation, plus JSON examples for
+        agy_start_task / agy_poll_task / agy_cancel_task.
+
+    Side effects:
+        None. Pure text generation; no MCP tool is called.
+
+    Use when:
+        You need non-blocking execution, progress polling, and a safe
+        cancellation strategy.
+
+    Example:
+        prompt_agy_async_orchestration(workspace_path="/srv/proj",
+                                       goal="Long-running migration across 50 files")
     """
     return (
         "You are orchestrating an MCP server that executes Antigravity CLI (`agy`) inside a controlled workspace.\n"
@@ -515,11 +588,21 @@ def prompt_async_orchestration(*, workspace_path: str, goal: str) -> str:
 
 @mcp.prompt
 def prompt_model_selection_guidance() -> str:
-    """
-    Guidance for model selection when using this MCP server.
+    """Explain the model-selection limitation and the `/model` CLI command.
 
-    Use this prompt to explain the model-selection limitation and how a user configures
-    the model directly in the Antigravity CLI via `/model`.
+    Input: (none). Zero-arg prompt.
+
+    Returns:
+        A markdown explainer covering: why the MCP server does NOT control
+        model selection, the 4-step `/model` CLI procedure, and operational
+        guidance (configure before MCP tasks; avoid mid-run changes).
+
+    Side effects:
+        None. Pure text generation.
+
+    Use when:
+        You need to explain the model-selection limitation and how a user
+        configures the model directly in the Antigravity CLI via `/model`.
     """
     return (
         "Important: This MCP server does NOT control which reasoning model Antigravity CLI (`agy`) uses.\n"
@@ -545,11 +628,22 @@ def prompt_model_selection_guidance() -> str:
 
 @mcp.prompt
 def prompt_security_and_workspace_rules() -> str:
-    """
-    Safety rules and workspace constraints for orchestrators.
+    """Safety rules and workspace constraints for orchestrators.
 
-    Use this prompt to remind an orchestrator how to stay within server safety boundaries
-    and how to choose safe defaults.
+    Input: (none). Zero-arg prompt.
+
+    Returns:
+        A markdown reminder covering: workspace_path constraints,
+        AGY_MCP_ALLOWED_ROOTS gate, safe-mode (AGY_MCP_MODE=safe)
+        restrictions, permissive-mode (AGY_MCP_MODE=permissive) allowlists,
+        and recommended safe defaults.
+
+    Side effects:
+        None. Pure text generation.
+
+    Use when:
+        You need to remind an orchestrator how to stay within server
+        safety boundaries and how to choose safe defaults.
     """
     return (
         "Safety and workspace rules for agy-mcp-server:\n"
@@ -583,22 +677,31 @@ def agy_health(req: AgyHealthRequestIn | None = None) -> AgyHealthResponse:
 
     This tool verifies that `agy` is discoverable on PATH and returns its version string.
 
-    Input:
-    - expected_version (optional): if provided, the response sets ok=false when the installed
-      version does not exactly match.
+    Input (optional fields marked):
+        - expected_version (str|None): if set, ok=false when the installed
+          version does not exactly match.
 
-    Output:
-    - agy_path: resolved absolute path to the `agy` binary
-    - agy_version: raw `agy --version` output (trimmed)
-    - ok: whether the health check passed (and version matched, if requested)
-    - notes: details such as version mismatch information
+    Returns:
+        AgyHealthResponse with:
+        - agy_path: resolved absolute path of the `agy` binary.
+        - agy_version: raw `agy --version` output (trimmed).
+        - ok: whether the health check passed.
+        - notes: details such as version mismatch information.
+
+    Raises:
+        RuntimeError("AGY_NOT_FOUND: ..."): the `agy` binary is missing
+          from PATH (raised inside _agy_path before subprocess call).
+
+    Side effects:
+        Spawns one short-lived `agy --version` subprocess. No workspace
+        mutation, no persistence write.
+
+    Example:
+        run_mcp(name="agy_health", args={})                          # default
+        run_mcp(args={"req": {"expected_version": "1.2.3"}})         # pin
 
     Args shape:
-        The MCP client MUST pass arguments wrapped in a `req` object:
-            `{"req": {"field1": value1, "field2": value2, ...}}`
-        For backwards-compatibility, the server also accepts `args={}` for
-        tools whose request model has all-optional fields; required-field
-        errors surface as Pydantic ValidationError.
+        Wrapped in `req` -- see the `agy_quickstart` prompt section "Args shape".
     """
     if req is None:
         req = AgyHealthRequest()
@@ -636,16 +739,64 @@ def agy_run_task(req: AgyRunTaskRequestIn | None = None) -> AgyRunTaskResponse:
     - Otherwise, returns a snapshot-based changed_files list (no diff payload).
 
     Model selection note:
-    - This MCP server does not control the reasoning model used by `agy`. `agy` uses the model
-      configured in the CLI itself (via the interactive /model command) and persists it across
-      sessions.
+    - This MCP server does NOT control which model `agy` uses. The active
+      model is whatever is configured interactively inside the CLI via
+      `/model`. To change it, run `agy` once and use the picker; that
+      persists across MCP sessions.
+
+    Input (optional fields marked):
+        - prompt (str, required): the task instructions sent on stdin.
+        - workspace_path (str, optional): existing dir inside
+          AGY_MCP_ALLOWED_ROOTS. Defaults to the server cwd.
+        - timeout_s (int, optional): wall-clock cap. Default 300, max 3600.
+        - sandbox (bool, optional): spawns `agy` in a sandbox. Default True,
+          forced in safe mode.
+        - dangerously_skip_permissions (bool, optional): bypass confirm
+          prompts. Default False. Rejected in safe mode.
+        - env (dict[str,str], optional): extra env vars. Default {}.
+          Rejected in safe mode.
+        - extra_args (list[str], optional): passthrough CLI flags. Default [].
+          Rejected in safe mode.
+        - capture_changes (bool, optional): if True (default), return a diff
+          (git) or file list (snapshot) of workspace mutations.
+        - change_scope ("workspace"|"git_only", optional): scopes the diff.
+          Default "workspace".
+
+    Returns:
+        AgyRunTaskResponse with:
+        - result: { run_id, workspace_path, stdout, stderr, exit_code,
+          timed_out, started_at, finished_at }
+        - changes: { method ("git"|"snapshot"|"none"), changed_files,
+          diff (str|None) }
+        - quota_warning: "ok"|"warning"|"exhausted" for the active model.
+        - quota_remaining_pct: 0-100 rounded to 1 decimal.
+
+    Raises:
+        ValueError("INVALID_WORKSPACE: ..."): workspace_path missing or not a dir.
+        ValueError("NOT_ALLOWED: ..."): workspace_path outside ALLOWED_ROOTS,
+          or env/extra_args violation in safe mode.
+        QuotaExhaustedError: policy enabled, overage disabled, quota is
+          "exhausted" at the moment of the call.
+
+    Side effects:
+        - Records 1 call against the sliding-window quota tracker for
+          AGY_MCP_QUOTA_ACTIVE_MODEL.
+        - On non-zero exit or timeout, classifies the failure via
+          `classify_agy_failure`.
+        - Persists the run_id in the in-memory run store
+          (visible to agy_list_runs for the lifetime of the server).
+        - The spawned `agy` subprocess may mutate `workspace_path`.
+
+    Example:
+        run_mcp(args={"req": {
+            "prompt": "list every .py file under src/",
+            "workspace_path": "/srv/proj",
+            "timeout_s": 120,
+            "capture_changes": True,
+        }})
 
     Args shape:
-        The MCP client MUST pass arguments wrapped in a `req` object:
-            `{"req": {"field1": value1, "field2": value2, ...}}`
-        For backwards-compatibility, the server also accepts `args={}` for
-        tools whose request model has all-optional fields; required-field
-        errors surface as Pydantic ValidationError.
+        Wrapped in `req` -- see the `agy_quickstart` prompt section "Args shape".
     """
     if req is None:
         req = AgyRunTaskRequest()
@@ -764,15 +915,49 @@ def agy_start_task(req: AgyStartTaskRequestIn | None = None) -> AgyStartTaskResp
     - Safe/permissive rules are the same as agy_run_task.
 
     Model selection note:
-    - This MCP server does not control the reasoning model used by `agy`. Configure it inside
-      the CLI via /model.
+    - This MCP server does NOT control which model `agy` uses. Configure
+      it interactively inside the CLI via `/model`; that state persists
+      across MCP sessions.
+
+    Input (optional fields marked):
+        Same field set as `agy_run_task` (`prompt`, `workspace_path`,
+        `timeout_s`, `sandbox`, `dangerously_skip_permissions`, `env`,
+        `extra_args`, `capture_changes`, `change_scope`). See that tool's
+        docstring for per-field semantics.
+
+    Returns:
+        AgyStartTaskResponse with:
+        - run_id (str): opaque id (e.g. "run-..."); pass to poll/cancel.
+        - started_at (datetime, UTC): when the subprocess was spawned.
+        - quota_warning, quota_remaining_pct: snapshot at start time.
+
+    Raises:
+        ValueError("INVALID_WORKSPACE: ..."): workspace_path missing or not a dir.
+        ValueError("NOT_ALLOWED: ..."): workspace_path outside ALLOWED_ROOTS,
+          or env/extra_args violation in safe mode.
+        QuotaExhaustedError: policy enabled, overage disabled, quota
+          "exhausted" at the moment of the spawn.
+        The subprocess spawn itself never raises on the caller side --
+          if `agy` exits immediately with an error, that surfaces
+          later via `agy_poll_task` (status="failed").
+
+    Side effects:
+        - Spawns a daemon thread (`_finalize_active_run`) that mutates
+          the run store after the subprocess exits.
+        - Records 1 call against the quota tracker at start time.
+        - Holds a stdin pipe on the subprocess until EOF is reached
+          (the prompt is fully written, then stdin is closed).
+        - Registers the run in `_active_runs` so subsequent
+          `agy_poll_task` / `agy_cancel_task` calls can find it.
+
+    Example:
+        rid = run_mcp(name="agy_start_task",
+                      args={"req": {"prompt": "..."}}).run_id
+        # ... later ...
+        run_mcp(name="agy_poll_task", args={"req": {"run_id": rid}}).result
 
     Args shape:
-        The MCP client MUST pass arguments wrapped in a `req` object:
-            `{"req": {"field1": value1, "field2": value2, ...}}`
-        For backwards-compatibility, the server also accepts `args={}` for
-        tools whose request model has all-optional fields; required-field
-        errors surface as Pydantic ValidationError.
+        Wrapped in `req` -- see the `agy_quickstart` prompt section "Args shape".
     """
     if req is None:
         req = AgyStartTaskRequest()
@@ -851,15 +1036,29 @@ def agy_poll_task(req: AgyPollTaskRequestIn | None = None) -> AgyPollTaskRespons
     - result contains full stdout/stderr (subject to truncation limits)
     - changes contains workspace change information if capture_changes was enabled
 
-    Errors:
-    - Raises RUN_NOT_FOUND if run_id is unknown to both the active run set and the run store.
+    Input (optional fields marked):
+        - run_id (str, required): the id returned by agy_start_task.
+
+    Returns:
+        AgyPollTaskResponse with status, result (None while running),
+        partial_stdout/partial_stderr (tail while running, "" after),
+        changes (None while running), quota_warning,
+        quota_remaining_pct.
+
+    Raises:
+        RuntimeError("RUN_NOT_FOUND: unknown run_id"): the id was
+          never started, or has already been evicted from the run
+          store (bounded by Settings.max_runs).
+
+    Side effects:
+        None. Polling is read-only against the in-memory run buffer.
+
+    Example:
+        run_mcp(name="agy_poll_task",
+                args={"req": {"run_id": "run-..."}})
 
     Args shape:
-        The MCP client MUST pass arguments wrapped in a `req` object:
-            `{"req": {"field1": value1, "field2": value2, ...}}`
-        For backwards-compatibility, the server also accepts `args={}` for
-        tools whose request model has all-optional fields; required-field
-        errors surface as Pydantic ValidationError.
+        Wrapped in `req` -- see the `agy_quickstart` prompt section "Args shape".
     """
     if req is None:
         req = AgyPollTaskRequest()
@@ -906,20 +1105,29 @@ def agy_cancel_task(req: AgyCancelTaskRequestIn | None = None) -> AgyCancelTaskR
     - force=false: send SIGTERM to the process group (graceful), falling back to terminate().
     - force=true: send SIGKILL to the process group (hard kill), falling back to kill().
 
-    Output:
-    - canceled=true when a running process was targeted for termination
-    - status="canceled" | "already_done" | "not_found"
+    Input (optional fields marked):
+        - run_id (str, required): the id returned by agy_start_task.
+        - force (bool, optional): see Cancellation strategy. Default False.
 
-    Note:
-    - Cancellation is best-effort. The process may still take a short time to exit; use
-      agy_poll_task to observe the final status and retrieve output.
+    Returns:
+        AgyCancelTaskResponse with:
+        - canceled (bool): True iff a running process was targeted.
+        - status: "canceled" | "already_done" | "not_found".
+
+    Raises:
+        None. Unknown ids return status="not_found" without raising.
+
+    Side effects:
+        - May terminate a child process and its process group.
+        - The finalize thread records the resulting "canceled" status
+          in the run store (visible via agy_poll_task).
+
+    Example:
+        run_mcp(name="agy_cancel_task",
+                args={"req": {"run_id": "run-...", "force": False}})
 
     Args shape:
-        The MCP client MUST pass arguments wrapped in a `req` object:
-            `{"req": {"field1": value1, "field2": value2, ...}}`
-        For backwards-compatibility, the server also accepts `args={}` for
-        tools whose request model has all-optional fields; required-field
-        errors surface as Pydantic ValidationError.
+        Wrapped in `req` -- see the `agy_quickstart` prompt section "Args shape".
     """
     if req is None:
         req = AgyCancelTaskRequest()
@@ -949,15 +1157,24 @@ def agy_list_runs(req: AgyListRunsRequestIn | None = None) -> AgyListRunsRespons
     Input:
     - limit: maximum number of entries to return
 
-    Output:
-    - runs: summaries containing run_id, workspace_path, status, and started_at
+    Input (optional fields marked):
+        - limit (int, optional): max entries to return. Default 50.
+
+    Returns:
+        AgyListRunsResponse with a `runs` list of AgyRunSummary:
+        { run_id, workspace_path, status, started_at }.
+
+    Raises:
+        None. Unknown ids do not raise -- they are simply absent.
+
+    Side effects:
+        None. Read-only against the active-set and run-store.
+
+    Example:
+        run_mcp(name="agy_list_runs", args={"req": {"limit": 10}})
 
     Args shape:
-        The MCP client MUST pass arguments wrapped in a `req` object:
-            `{"req": {"field1": value1, "field2": value2, ...}}`
-        For backwards-compatibility, the server also accepts `args={}` for
-        tools whose request model has all-optional fields; required-field
-        errors surface as Pydantic ValidationError.
+        Wrapped in `req` -- see the `agy_quickstart` prompt section "Args shape".
     """
     if req is None:
         req = AgyListRunsRequest()
@@ -1037,26 +1254,39 @@ def agy_quota(req: AgyQuotaRequestIn | None = None) -> AgyQuotaResponse:
        - Stub: queries the Gemini API quota endpoint if implemented.
        - Currently returns None with a logged warning unless `use_api=False`.
 
-    Args:
-      - model: if provided, returns only that model's status. Otherwise
-        returns statuses for all known models.
-      - tier: subscription tier for limit lookup (free/pro/ultra/enterprise).
-        Defaults to `unknown` which applies a permissive 999_999 limit.
-      - probe: opt-in flag for the C strategy above.
-      - use_api: opt-in flag for the D strategy above.
+    Input (optional fields marked):
+        - model (str|None): restrict report to one model. None returns all.
+        - tier (str|enum): subscription tier for limit lookup
+          (free|pro|ultra|enterprise|unknown). Default "unknown" applies a
+          permissive 999_999 limit.
+        - probe (bool): opt-in flag for strategy C (runs an `agy` smoke).
+          WARNING: probe itself consumes quota.
+        - use_api (bool): opt-in flag for strategy D (external API). Stub.
 
     Returns:
-      - statuses: list of per-model QuotaStatus entries.
-      - overall_healthy: True if all statuses are healthy.
-      - active_model: the configured active model (from AGY_MCP_QUOTA_ACTIVE_MODEL).
-      - notes: top-level notes (e.g., warnings about probe consumption).
+        AgyQuotaResponse with:
+        - statuses: list of per-model QuotaStatus entries.
+        - overall_healthy: True if all statuses are healthy.
+        - active_model: configured active model (AGY_MCP_QUOTA_ACTIVE_MODEL).
+        - notes: top-level notes (e.g., warnings about probe consumption).
+
+    Raises:
+        None. QuotaExhaustedError is raised by agy_run_task / agy_start_task
+        based on the policy + counter snapshot, not by this tool.
+
+    Side effects:
+        - When probe=True: spawns a short `agy` subprocess which consumes
+          a turn of quota against the active model.
+        - When use_api=True: may issue a remote quota-API call (currently
+          logs a warning and returns None).
+
+    Example:
+        run_mcp(name="agy_quota", args={"req": {}})                # all
+        run_mcp(name="agy_quota", args={"req": {"model": "flash"}})
+        run_mcp(name="agy_quota", args={"req": {"probe": True}})   # consume
 
     Args shape:
-        The MCP client MUST pass arguments wrapped in a `req` object:
-            `{"req": {"field1": value1, "field2": value2, ...}}`
-        For backwards-compatibility, the server also accepts `args={}` for
-        tools whose request model has all-optional fields; required-field
-        errors surface as Pydantic ValidationError.
+        Wrapped in `req` -- see the `agy_quickstart` prompt section "Args shape".
     """
     if req is None:
         req = AgyQuotaRequest()
@@ -1147,18 +1377,31 @@ def agy_clear_cache(req: AgyClearCacheRequestIn | None = None) -> AgyClearCacheR
     Warning: clearing the cache causes subsequent `uvx` invocations to
     re-download and re-install dependencies (slower first startup after clean).
 
+    Input (optional fields marked):
+        - full (bool): if True, clears the entire uv cache (~/.cache/uv).
+          if False (default), clears only this project's package entries.
+
     Returns:
-      - cleared: True if the command succeeded.
-      - entries_removed: number of cache entries removed (estimate).
-      - cache_dir: the cache directory that was targeted.
-      - notes: warnings or additional details.
+        AgyClearCacheResponse with:
+        - cleared: True if the command succeeded.
+        - entries_removed: number of cache entries removed (estimate).
+        - cache_dir: the cache directory that was targeted.
+        - notes: warnings or additional details.
+
+    Raises:
+        RuntimeError("UV_NOT_FOUND: ..."): the `uv` binary is missing
+          from PATH.
+
+    Side effects:
+        Spawns `uv cache clean`. Subsequent `uvx` invocations will
+        re-download and re-install dependencies (slower first startup).
+
+    Example:
+        run_mcp(name="agy_clear_cache", args={"req": {}})              # default
+        run_mcp(name="agy_clear_cache", args={"req": {"full": True}})  # full
 
     Args shape:
-        The MCP client MUST pass arguments wrapped in a `req` object:
-            `{"req": {"field1": value1, "field2": value2, ...}}`
-        For backwards-compatibility, the server also accepts `args={}` for
-        tools whose request model has all-optional fields; required-field
-        errors surface as Pydantic ValidationError.
+        Wrapped in `req` -- see the `agy_quickstart` prompt section "Args shape".
     """
     if req is None:
         req = AgyClearCacheRequest()
@@ -1251,23 +1494,33 @@ def agy_init_persistence(
     ``AGENTS.md``, ``PROJECTS.md``, and ``MEMORY.md`` (unless they already
     exist). Idempotent: re-running without ``force=true`` is a no-op.
 
-    Args:
-      - force: overwrite existing files.
-      - seed_templates: when True (default), writes the seed templates.
-        When False, creates empty files. When None, uses settings.
+    Input (optional fields marked):
+        - force (bool): overwrite existing files. Default False.
+        - seed_templates (bool|None): True writes seed templates,
+          False writes empty files, None uses settings default.
 
     Returns:
-      - base_dir: absolute path to the persistence directory.
-      - created: paths created by this call.
-      - already_existed: paths that already existed (skipped).
-      - seed_version: version of the seed template used.
+        AgyInitPersistenceResponse with:
+        - base_dir: absolute path to the persistence directory.
+        - created: paths created by this call.
+        - already_existed: paths that already existed (skipped).
+        - seed_version: version of the seed template used.
+
+    Raises:
+        ValueError("PERSISTENCE_DISABLED: ..."): settings.persistence_enabled
+          is False.
+
+    Side effects:
+        - Creates the persistence directory at ~/.open-cli-router/{provider}/
+        - Writes AGENTS.md, PROJECTS.md, MEMORY.md (unless already present).
+          Idempotent: re-running without force=True is a no-op.
+
+    Example:
+        run_mcp(name="agy_init_persistence", args={"req": {}})
+        run_mcp(name="agy_init_persistence", args={"req": {"force": True}})
 
     Args shape:
-        The MCP client MUST pass arguments wrapped in a `req` object:
-            `{"req": {"field1": value1, "field2": value2, ...}}`
-        For backwards-compatibility, the server also accepts `args={}` for
-        tools whose request model has all-optional fields; required-field
-        errors surface as Pydantic ValidationError.
+        Wrapped in `req` -- see the `agy_quickstart` prompt section "Args shape".
     """
     if req is None:
         req = AgyInitPersistenceRequest()
@@ -1294,25 +1547,29 @@ def agy_read_persistence(
 ) -> AgyReadPersistenceResponse:
     """Read one of the three persistence files.
 
-    Args:
-      - file: ``agents``, ``projects``, or ``memory``.
-      - offset: byte offset to start reading (default 0).
-      - limit: max bytes to read (default: whole file up to max_file_bytes).
+    Input (optional fields marked):
+        - file (enum): "agents" | "projects" | "memory". Default "memory".
+        - offset (int): byte offset to start reading. Default 0.
+        - limit (int|None): max bytes to read; None reads whole file up to
+          settings.persistence_max_file_bytes.
 
     Returns:
-      - file: absolute path.
-      - content: file contents (UTF-8).
-      - size_bytes: total file size.
-      - truncated: True if the read was capped by ``limit`` or the file
-        was larger than ``persistence_max_file_bytes``.
-      - modified_at: last modification time (UTC).
+        AgyReadPersistenceResponse with:
+        - file: absolute path.
+        - content: file contents (UTF-8).
+        - size_bytes: total file size.
+        - truncated: True if capped by limit or max_file_bytes.
+        - modified_at: last modification time (UTC).
+
+    Raises:
+        ValueError("PERSISTENCE_DISABLED: ..."): settings.persistence_enabled
+          is False.
+
+    Side effects:
+        None. Read-only against the persistence directory.
 
     Args shape:
-        The MCP client MUST pass arguments wrapped in a `req` object:
-            `{"req": {"field1": value1, "field2": value2, ...}}`
-        For backwards-compatibility, the server also accepts `args={}` for
-        tools whose request model has all-optional fields; required-field
-        errors surface as Pydantic ValidationError.
+        Wrapped in `req` -- see the `agy_quickstart` prompt section "Args shape".
     """
     if req is None:
         req = AgyReadPersistenceRequest()
@@ -1341,24 +1598,30 @@ def agy_append_persistence(
 
     Typical use: append a concise summary to ``memory`` after each session.
 
-    Args:
-      - file: ``agents``, ``projects``, or ``memory``.
-      - content: markdown text to append.
-      - section_header: optional ``## <header>`` to insert before the
-        content if the heading is not already present.
+    Input (optional fields marked):
+        - file (enum): "agents" | "projects" | "memory".
+        - content (str): markdown text to append. Required.
+        - section_header (str|None): optional "## <header>" inserted
+          before the content if the heading is not already present.
 
     Returns:
-      - file: absolute path.
-      - appended_bytes: bytes added by this call.
-      - new_size_bytes: total file size after append.
-      - timestamp: server time of the write (UTC).
+        AgyAppendPersistenceResponse with:
+        - file: absolute path.
+        - appended_bytes: bytes added by this call.
+        - new_size_bytes: total file size after append.
+        - timestamp: server time of the write (UTC).
+
+    Raises:
+        ValueError("PERSISTENCE_DISABLED: ..."): settings.persistence_enabled
+          is False.
+
+    Side effects:
+        Appends to a persistence file on disk (AGENTS.md / PROJECTS.md /
+        MEMORY.md). Do not store secrets, credentials, or full file dumps;
+        keep entries small and high-signal.
 
     Args shape:
-        The MCP client MUST pass arguments wrapped in a `req` object:
-            `{"req": {"field1": value1, "field2": value2, ...}}`
-        For backwards-compatibility, the server also accepts `args={}` for
-        tools whose request model has all-optional fields; required-field
-        errors surface as Pydantic ValidationError.
+        Wrapped in `req` -- see the `agy_quickstart` prompt section "Args shape".
     """
     if req is None:
         req = AgyAppendPersistenceRequest()
@@ -1384,28 +1647,38 @@ def agy_update_persistence(
 ) -> AgyUpdatePersistenceResponse:
     """Replace or append to a section in one of the persistence files.
 
-    Args:
-      - file: ``agents``, ``projects``, or ``memory``.
-      - section_anchor: heading text without the ``## `` prefix.
-      - new_content: replacement content (full section including heading)
-        when ``mode="replace"``.
-      - mode: ``replace`` (default) replaces the section up to the next
-        ``## `` heading. ``append`` ignores the anchor and appends
-        ``new_content`` to the end of the file.
+    Input (optional fields marked):
+        - file (enum): "agents" | "projects" | "memory".
+        - section_anchor (str): heading text without the "## " prefix.
+        - new_content (str): replacement content (full section including
+          heading) when mode="replace".
+        - mode (enum): "replace" (default) replaces the section up to the
+          next "## " heading; "append" ignores the anchor.
+        - confirm (bool): in safe mode, requires confirm=true to update
+          AGENTS.md (system prompt file).
 
     Returns:
-      - file: absolute path.
-      - section_anchor: the anchor that was requested.
-      - matched: True if the anchor was found (replace mode). Always True
-        for append mode.
-      - new_size_bytes: total file size after the update.
+        AgyUpdatePersistenceResponse with:
+        - file: absolute path.
+        - section_anchor: the anchor that was requested.
+        - matched: True if the anchor was found (replace mode). Always True
+          for append mode.
+        - new_size_bytes: total file size after the update.
+
+    Raises:
+        ValueError("PERSISTENCE_DISABLED: ..."): settings.persistence_enabled
+          is False.
+        ValueError("CONFIRM_REQUIRED: ..."): in safe mode, updating
+          AGENTS.md requires confirm=true.
+
+    Side effects:
+        Rewrites a section (or appends) of a persistence file on disk.
+        Returns matched=false when the anchor is not found and no edit
+        happened (so orchestrators can detect typos before silent
+        appending).
 
     Args shape:
-        The MCP client MUST pass arguments wrapped in a `req` object:
-            `{"req": {"field1": value1, "field2": value2, ...}}`
-        For backwards-compatibility, the server also accepts `args={}` for
-        tools whose request model has all-optional fields; required-field
-        errors surface as Pydantic ValidationError.
+        Wrapped in `req` -- see the `agy_quickstart` prompt section "Args shape".
     """
     if req is None:
         req = AgyUpdatePersistenceRequest()
@@ -1445,23 +1718,28 @@ def agy_load_persistence_context(
     Returns excerpts (head + tail) of each requested file. Used by the
     orchestrator to inject persistent memory into a new session.
 
-    Args:
-      - include: which files to load (default: all three).
-      - max_chars_per_file: truncation threshold (default 20k chars).
+    Input (optional fields marked):
+        - include (list[str]|None): subset of files to load
+          ("agents"|"projects"|"memory"). None = all three.
+        - max_chars_per_file (int): per-file char cap (default 20_000).
 
     Returns:
-      - agents_excerpt / projects_excerpt / memory_excerpt: the excerpts.
-      - truncated_flags: True for each file that was truncated.
-      - total_chars: sum of excerpt lengths.
-      - base_dir: the persistence directory path.
-      - initialized: True if ``agy_init_persistence`` has been run.
+        AgyLoadPersistenceContextResponse with:
+        - agents_excerpt / projects_excerpt / memory_excerpt: excerpts.
+        - truncated_flags: True for each file that was truncated.
+        - total_chars: sum of excerpt lengths.
+        - base_dir: the persistence directory path.
+        - initialized: True if agy_init_persistence has been run.
+
+    Raises:
+        ValueError("PERSISTENCE_DISABLED: ..."): settings.persistence_enabled
+          is False.
+
+    Side effects:
+        None. Read-only against the persistence directory.
 
     Args shape:
-        The MCP client MUST pass arguments wrapped in a `req` object:
-            `{"req": {"field1": value1, "field2": value2, ...}}`
-        For backwards-compatibility, the server also accepts `args={}` for
-        tools whose request model has all-optional fields; required-field
-        errors surface as Pydantic ValidationError.
+        Wrapped in `req` -- see the `agy_quickstart` prompt section "Args shape".
     """
     if req is None:
         req = AgyLoadPersistenceContextRequest()
@@ -1655,12 +1933,29 @@ def agy_self_test(req: AgySelfTestRequestIn | None = None) -> AgySelfTestRespons
     This is a metadata-only check — no tools are actually invoked, so it
     is safe to run in production and has no side effects.
 
+    Input (optional fields marked):
+        - include (list[str]|None): subset of tool names to inspect.
+          None enumerates every registered tool.
+        - only_show_tolerant (bool): when True, suppresses reports for
+          tools whose schemas are strict (require {"req": {...}} wrapping).
+
+    Returns:
+        AgySelfTestResponse (per-tool schema reports with tolerant_count
+        and requires_req_count summaries).
+
+    Raises:
+        RuntimeError("Cannot access FastMCP tool manager ..."): internal
+          FastMCP API has changed and this probe needs updating.
+
+    Side effects:
+        None. Metadata-only check. Safe to run in production.
+
+    Example:
+        run_mcp(name="agy_self_test", args={})
+        run_mcp(name="agy_self_test", args={"req": {"only_show_tolerant": True}})
+
     Args shape:
-        The MCP client MUST pass arguments wrapped in a `req` object:
-            `{"req": {"include": ["agy_health"], "only_show_tolerant": true}}`
-        For backwards-compatibility, the server also accepts `args={}` for
-        tools whose request model has all-optional fields; required-field
-        errors surface as Pydantic ValidationError.
+        Wrapped in `req` -- see the `agy_quickstart` prompt section "Args shape".
     """
     if req is None:
         req = AgySelfTestRequest()
@@ -1730,22 +2025,6 @@ def agy_self_test(req: AgySelfTestRequestIn | None = None) -> AgySelfTestRespons
         server_info={"name": "agy-mcp-server", "version": "3.4.2"},
         summary=f"{len(reports)} tools inspected: {tolerant} tolerant to args={{}}, {requires_req} still require `req` wrapper",
     )
-
-
-class QuotaExhaustedError(Exception):
-    """Raised when an agy call would exceed the per-window quota and the
-    active quota policy is enabled with overage disabled."""
-
-    def __init__(self, *, model: str, used: int, limit: int, reset_in_seconds: int) -> None:
-        self.model = model
-        self.used = used
-        self.limit = limit
-        self.reset_in_seconds = reset_in_seconds
-        super().__init__(
-            f"QUOTA_EXHAUSTED: model={model!r} used={used}/{limit} "
-            f"(resets in {reset_in_seconds}s). "
-            f"Set AGY_MCP_ALLOW_OVERAGE=true to bypass, or wait for window reset."
-        )
 
 
 def main() -> None:
