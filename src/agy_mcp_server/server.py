@@ -1765,7 +1765,23 @@ def agy_load_persistence_context(
 
 @mcp.prompt(name=prompt_name("persistence_protocol"))
 def prompt_persistence_protocol() -> str:
-    """Instruct the orchestrator on how to maintain the persistence layer."""
+    """Instruct the orchestrator on how to maintain the persistence layer.
+
+    Input: (none). Zero-arg prompt.
+
+    Returns:
+        Markdown covering: location note (resolved base_dir + LOCATION
+        hint), the 3 files (AGENTS.md / PROJECTS.md / MEMORY.md),
+        the 4-step lifecycle (init / load / append / update), and a
+        do-not-store list (secrets, credentials, full dumps).
+
+    Side effects:
+        None. The prompt is pure text generation; no MCP tool is called.
+
+    Use when:
+        You need to instruct the orchestrator on how to maintain the
+        persistent memory layer (`AGENTS.md`, `PROJECTS.md`, `MEMORY.md`).
+    """
     base = _settings.resolve_persistence_base_dir()
     location_note = (
         f"NOTE: persistence is configured with LOCATION="
@@ -1805,9 +1821,20 @@ def prompt_persistence_protocol() -> str:
 def prompt_quickstart() -> str:
     """Cheatsheet for using this MCP server. Read this first if confused.
 
-    Returns the canonical contract: args shape, required CLI binary,
-    tool catalog, and common gotchas. Static, but kept in sync with
-    `agy_self_test` results.
+    Input: (none). Zero-arg prompt.
+
+    Returns:
+        Markdown with the canonical contract: args shape (`{"req": {...}}`
+        wrapping), required CLI binary (`agy`), the 14-tool catalog, and
+        common gotchas (quota, workspace path, mode).
+
+    Side effects:
+        None. Pure text generation. Static content kept in sync with
+        `agy_self_test` results.
+
+    Use when:
+        You are starting an orchestration session and need the canonical
+        contract at a glance.
     """
     return (
         f"# {PROVIDER_PREFIX}-mcp-server — Quickstart\n"
@@ -1851,9 +1878,20 @@ def prompt_quickstart() -> str:
 def prompt_contract() -> str:
     """Full machine-readable JSON contract of every registered tool.
 
-    Builds the catalog from mcp._local_provider._components so it stays
-    in sync with the actual registered tool schemas. Read this before
-    writing integrations.
+    Input: (none). Zero-arg prompt.
+
+    Returns:
+        A filled markdown prompt template with the tool catalog built
+        from `mcp._local_provider._components` so it stays in sync with
+        the actual registered tool schemas.
+
+    Side effects:
+        None. Pure text generation. Internally reads live tool registry
+        state via FastMCP internals; no file or MCP tool is called.
+
+    Use when:
+        You need the full machine-readable JSON contract before writing
+        integrations.
     """
     tools_dict: dict[str, Any] = {}
     if hasattr(mcp, "_local_provider") and hasattr(mcp._local_provider, "_components"):
@@ -1881,9 +1919,22 @@ def prompt_contract() -> str:
 def prompt_troubleshoot(error: str = "") -> str:
     """Diagnose a specific error string and return the fix recipe.
 
-    Pass the exact error message you received (e.g. \"req: Missing required
-    argument\" or \"workspace_path is outside allowed roots\") and this
-    prompt returns the canonical fix.
+    Input:
+        - error (str, optional): the exact error message you received
+          (e.g. "req: Missing required argument" or "workspace_path is
+          outside allowed roots"). Default "" returns a usage hint.
+
+    Returns:
+        A short markdown "BUG: ... / FIX: ..." snippet matched on
+        substrings of `error` (case-insensitive). Falls through to a
+        "no match" hint when the error does not match any known recipe.
+
+    Side effects:
+        None. Pure text generation.
+
+    Use when:
+        You (or the orchestrator) received a non-obvious error from any
+        agy_* tool call and want the canonical fix.
     """
     err_lc = (error or "").lower()
     if not err_lc:
